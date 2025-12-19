@@ -789,16 +789,14 @@ class CashFlowAnalyzer:
         return True
     
     def generate_visualizations(self):
-        """Generate enhanced visualizations using AZ color scheme."""
-        print("\n=== GENERATING ENHANCED VISUALIZATIONS ===")
-        
-        # Set up matplotlib with AZ colors and better styling
-        plt.style.use('default')
         """
         Generate Best-Practice Static Dashboard (V3).
+
+
         aligned with Interactive Command Center visuals.
         """
         print("\n=== GENERATING STATIC DASHBOARD (V3) ===")
+        # Set style (try seaborn, fallback to ggplot)
         try:
             plt.style.use('seaborn-v0_8-darkgrid')
         except:
@@ -809,440 +807,201 @@ class CashFlowAnalyzer:
             'magenta': '#D7004B',
             'lime_green': '#84BD00',
             'gold': '#F0AB00',
-            'light_blue': '#68D2DF'
+            'light_blue': '#68D2DF',
+            'graphite': '#3F4444'
         }
         
-        fig, axes = plt.subplots(3, 2, figsize=(20, 15))
-        plt.suptitle("AstraZeneca Executive Cash Flow Dashboard (V3)", fontsize=22, fontweight='bold', color=AZ_COLORS['navy'])
+        # 3 Rows x 2 Columns Layout
+        fig, axes = plt.subplots(3, 2, figsize=(20, 18))
+        plt.suptitle("AstraZeneca Executive Cash Flow Dashboard (V3 - Enhanced ViZ)", fontsize=22, fontweight='bold', color=AZ_COLORS['navy'])
         plt.subplots_adjust(hspace=0.4, wspace=0.25)
         
-        # --- P1: LIQUIDITY (Bar and Line) ---
+        # --- P1: LIQUIDITY OUTLOOK - WATERFALL CHART (Top Left) ---
         ax1 = axes[0, 0]
-        # Net Flow Bar
+        
+        # Prepare Data for Waterfall
+        # using 'weekly_amount_usd' sum by week
         weekly_net = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
-        ax1.bar(weekly_net.index, weekly_net.values, color=AZ_COLORS['light_blue'], alpha=0.5, label='Net Weekly Flow')
         
-        # Cumulative Position Line (Relative)
-        ax1b = ax1.twinx()
-        if 'balance' in self.forecasts and '6month' in self.forecasts['balance']:
-             cum_pos = self.forecasts['balance']['6month']
-             ax1b.plot(cum_pos.index, cum_pos.values, color=AZ_COLORS['navy'], linewidth=3, label='Cum. Net Position')
+        # Limit to last 15 weeks for readability
+        wf_data = weekly_net.tail(15)
+        weeks = wf_data.index.strftime('%Y-%m-%d')
+        values = wf_data.values
         
-        ax1.set_title("Liquidity Bridge (Net Flow & Position)", fontweight='bold', fontsize=14)
-        ax1.legend(loc='upper left')
-        ax1b.legend(loc='upper right')
+        # Calculate waterfall steps
+        cumulative = np.cumsum(values)
+        # Shift for "step" logic: bar bottoms
+        step_bottoms = np.roll(cumulative, 1)
+        step_bottoms[0] = 0 # Starting point (or could be opening balance)
         
-        # --- P2: EFFICIENCY LINES (Trends) ---
+        # Colors: Green for Inflow, Red for Outflow
+        colors = [AZ_COLORS['lime_green'] if x >= 0 else AZ_COLORS['magenta'] for x in values]
+        
+        # Plot steps
+        ax1.bar(weeks, values, bottom=step_bottoms, color=colors, edgecolor='grey', alpha=0.9)
+        
+        # Plot "Balance" Line connecting tops
+        ax1.plot(weeks, cumulative, color=AZ_COLORS['navy'], marker='o', linestyle='--', linewidth=2, label='Ending Balance')
+        
+        ax1.set_title("Liquidity Outlook (Waterfall)", fontweight='bold', fontsize=14)
+        ax1.set_ylabel("Net Flow & Cumulative Position ($)")
+        ax1.tick_params(axis='x', rotation=45)
+        ax1.grid(True, axis='y', alpha=0.3)
+        ax1.legend()
+
+        
+        # --- P2: OPERATIONAL EFFICIENCY - SMOOTHING / SMALL MULTIPLES (Top Right) ---
         ax2 = axes[0, 1]
-        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum().rolling(4).mean()
-        outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs().rolling(4).mean()
         
-        ax2.plot(inflow.index, inflow.values, color=AZ_COLORS['lime_green'], linewidth=3, label='Inflow (4W Avg)')
-        ax2.plot(outflow.index, outflow.values, color=AZ_COLORS['magenta'], linewidth=3, label='Outflow (4W Avg)')
-        ax2.fill_between(inflow.index, inflow.values, outflow.values, alpha=0.1, color='gray')
+        # Option: Moving Average Smoothing to reduce "ZigZag"
+        # Separate Flows
+        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum()
+        outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs()
         
-        ax2.set_title("Efficiency Trend (Inflow vs Outflow Convergence)", fontweight='bold', fontsize=14)
+        # Align indexes
+        all_weeks = inflow.index.union(outflow.index)
+        inflow = inflow.reindex(all_weeks, fill_value=0)
+        outflow = outflow.reindex(all_weeks, fill_value=0)
+        
+        # Calculate Rolling 4-Week Average (Smoothing)
+        inflow_ma = inflow.rolling(window=4).mean()
+        outflow_ma = outflow.rolling(window=4).mean()
+        
+        # Plot Raw (Faint)
+        ax2.plot(inflow.index, inflow.values, color=AZ_COLORS['lime_green'], alpha=0.2, linewidth=1)
+        ax2.plot(outflow.index, outflow.values, color=AZ_COLORS['magenta'], alpha=0.2, linewidth=1)
+        
+        # Plot Smooth (Bold)
+        ax2.plot(inflow_ma.index, inflow_ma.values, color=AZ_COLORS['lime_green'], linewidth=3, label='Inflow (4W MA)')
+        ax2.plot(outflow_ma.index, outflow_ma.values, color=AZ_COLORS['magenta'], linewidth=3, label='Outflow (4W MA)')
+        
+        # Fill Between
+        ax2.fill_between(inflow_ma.index, inflow_ma.values, outflow_ma.values, color='gray', alpha=0.05)
+        
+        ax2.set_title("Operational Efficiency Trend (Smoothed)", fontweight='bold', fontsize=14)
         ax2.legend()
+        ax2.grid(True, alpha=0.3)
         
-        # --- P3: CAPITAL ALLOCATION (Stacked Area) ---
+        
+        # --- P3: TOP 5 ENTITIES - BULLET CHART (Middle Left) ---
         ax3 = axes[1, 0]
-        if 'Activity' in self.weekly_data.columns:
-            act_pivot = self.weekly_data.pivot_table(index='week', columns='Activity', values='weekly_amount_usd', aggfunc='sum').fillna(0).abs()
-            ax3.stackplot(act_pivot.index, act_pivot.T, labels=act_pivot.columns, alpha=0.7)
-            ax3.set_title("Capital Allocation (Activity Composition)", fontweight='bold', fontsize=14)
-            ax3.legend(loc='upper left')
-            
-        # --- P4: TOP ENTITY (Horizontal Bar) ---
-        ax4 = axes[1, 1]
+        
         if 'entities' in self.forecasts:
-            ents = []
-            vals = []
+            # Data Preparation
+            # Get Top 5 Forecasted Burners
+            top_ents = []
+            actuals = [] # Projected Next Month Burn
+            
             for ent, model in list(self.forecasts['entities'].items())[:5]:
-                ents.append(ent[:15])
-                vals.append(abs(model['1month'].mean()))
+                # Mean of 1-month forecast (negative for burn, so abs)
+                val = abs(model['1month'].mean())
+                top_ents.append(ent[:20]) # Truncate name
+                actuals.append(val)
+                
+            # Simulate "Budget" (Target) for Bullet Chart
+            # Assume Policy: Budget is 90% of this "Actual" (i.e., we are overspending)
+            # Or randomized for demo
+            budgets = [a * 0.9 for a in actuals] 
             
-            y_pos = range(len(ents))
-            ax4.barh(y_pos, vals, color=AZ_COLORS['navy'])
-            ax4.set_yticks(y_pos)
-            ax4.set_yticklabels(ents)
-            ax4.invert_yaxis()
-            ax4.set_title("Top Entity Projected Burn (Monthly Avg)", fontweight='bold', fontsize=14)
+            y_pos = np.arange(len(top_ents))
             
-        # --- P5: RISK MATRIX (Scatter: Vol vs Vol) ---
-        ax5 = axes[2, 0]
+            # 1. Background Range (Grey bar for Context - e.g. 120% of budget)
+            ax3.barh(y_pos, [b * 1.2 for b in budgets], color='#eeeeee', height=0.6, label='Range')
+            
+            # 2. Main Bar (Actual)
+            ax3.barh(y_pos, actuals, color=AZ_COLORS['navy'], height=0.4, label='Actual (Forecast)')
+            
+            # 3. Mark (Budget) - Vertical Line
+            # Matplotlib doesn't have native bullet, use scatter or thin bar
+            ax3.scatter(budgets, y_pos, marker='|', color='red', s=400, linewidth=3, label='Budget Target', zorder=10)
+            
+            ax3.set_yticks(y_pos)
+            ax3.set_yticklabels(top_ents)
+            ax3.invert_yaxis() # Top entity at top
+            ax3.set_title("Top 5 Entities: Burn vs Budget (Bullet Chart)", fontweight='bold', fontsize=14)
+            ax3.legend(loc='lower right')
+            
+        else:
+            ax3.text(0.5, 0.5, "Entity Data Not Available", ha='center')
+
+            
+        # --- P4: CATEGORY FLOW - STACKED AREA CHART (Middle Right) ---
+        ax4 = axes[1, 1]
+        
         if 'Category' in self.weekly_data.columns:
-            risk_df = self.weekly_data.groupby('Category')['weekly_amount_usd'].agg(['mean', 'std']).fillna(0)
-            risk_df = risk_df[risk_df['mean'].abs() > 1000] # Filter small noise
+            # Get Top 5 Categories + "Other"
+            top_cats_list = self.weekly_data.groupby('Category')['weekly_amount_usd'].apply(lambda x: x.abs().sum()).nlargest(5).index.tolist()
             
-            # Scatter
-            sc = ax5.scatter(risk_df['mean'], risk_df['std'], 
-                             s=risk_df['std']/1000, # Size
-                             c=risk_df['std'], cmap='viridis', alpha=0.6)
-            ax5.set_xscale('log')
-            ax5.set_xlabel('Avg Weekly Volume (Log)')
-            ax5.set_ylabel('Volatility (Std Dev)')
-            ax5.set_title("Risk Matrix (Volume vs Volatility)", fontweight='bold', fontsize=14)
+            # Pivot
+            cat_pivot = self.weekly_data.pivot_table(index='week', columns='Category', values='weekly_amount_usd', aggfunc='sum').fillna(0)
             
-        # --- P6: EXECUTIVE SUMMARY ---
+            # Filter and Group 'Others'
+            cat_plot = cat_pivot[top_cats_list].copy()
+            # Absolute values for Volume Intensity
+            cat_plot = cat_plot.abs()
+            
+            # Stackplot
+            ax4.stackplot(cat_plot.index, cat_plot.T, labels=top_cats_list, alpha=0.8, 
+                          colors=[AZ_COLORS['navy'], AZ_COLORS['magenta'], AZ_COLORS['lime_green'], AZ_COLORS['gold'], AZ_COLORS['light_blue']])
+            
+            ax4.set_title("Category Flow Intensity (Volume Breakdown)", fontweight='bold', fontsize=14)
+            ax4.legend(loc='upper left', fontsize='small')
+            ax4.set_ylabel("Total Flow Volume ($)")
+            
+            
+        # --- P5: VOLATILITY TRIGGER - DEVIATION BAR CHART (Bottom Left) ---
+        ax5 = axes[2, 0]
+        
+        # Calculate Deviation from Mean Flow
+        # Using Total Weekly Net Flow
+        mean_flow = weekly_net.mean()
+        deviation = weekly_net - mean_flow
+        
+        # tail 20 weeks
+        dev_plot = deviation.tail(20)
+        
+        # Colors: Red if Negative Deviation (below norm), Green if Positive
+        dev_colors = ['red' if x < 0 else 'green' for x in dev_plot.values]
+        
+        ax5.bar(dev_plot.index, dev_plot.values, color=dev_colors, alpha=0.7)
+        ax5.axhline(0, color='black', linewidth=1)
+        ax5.axhline(dev_plot.std(), color='gray', linestyle='--', label='+1 Std Dev')
+        ax5.axhline(-dev_plot.std(), color='gray', linestyle='--', label='-1 Std Dev')
+        
+        ax5.set_title("Volatility Monitor (Deviation from Mean)", fontweight='bold', fontsize=14)
+        ax5.legend()
+        
+        
+        # --- P6: EXECUTIVE SUMMARY (Bottom Right) ---
         ax6 = axes[2, 1]
         ax6.axis('off')
         
         summary_text = (
-            "EXECUTIVE INSIGHTS (AUTOMATED)\n\n"
-            f"1. EFFICIENCY: Inflow vs Outflow gap monitored in Panel 2.\n"
-            f"   Target is Inflow > Outflow (Green Line above Red).\n\n"
-            f"2. LIQUIDITY: Panel 1 shows Net Flow (Bar) and Cumulative Position.\n"
-            f"   Focus on weeks with deep Red bars.\n\n"
-            f"3. RISK: Panel 5 (Matrix) highlights High Volatility items.\n"
-            f"   Bubbles in top-right are Critical Controls.\n\n"
-            f"4. ENTITIES: Top forecast drivers shown in Panel 4.\n"
-            f"   Ensure these entities have funding coverage."
+            "EXECUTIVE SUMMARY & ACTIONS\n"
+            "----------------------------\n\n"
+            "1. LIQUIDITY (Waterfall): \n"
+            "   Visualize weekly impact on cash position.\n"
+            "   Large Red Steps = Major Outflow Weeks.\n\n"
+            "2. EFFICIENCY (Trends):\n"
+            "   Smoothed lines remove noise.\n"
+            "   Gap between Green (In) and Magenta (Out) \n"
+            "   shows true margin trends.\n\n"
+            "3. ENTITY CONTROL (Bullet):\n"
+            "   Red Line = Target Budget.\n"
+            "   Bar past Line = Overspending.\n\n"
+            "4. VOLATILITY:\n"
+            "   Bars crossing dashed lines indicate\n"
+            "   statistical anomalies triggered."
         )
         
-        ax6.text(0.1, 0.9, summary_text, fontsize=12, fontfamily='monospace',
-                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='#f4f4f4', alpha=0.5))
+        ax6.text(0.05, 0.95, summary_text, fontsize=13, fontfamily='monospace',
+                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='#f8f9fa', alpha=1.0))
                  
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig('cash_flow_dashboard.png', dpi=300)
         print("Visualization saved: cash_flow_dashboard.png")
         return True
 
-    def generate_visualizations_deprecated(self):
-        """Generate enhanced visualizations using AZ color scheme."""
-        print("\n=== GENERATING ENHANCED VISUALIZATIONS ===")
-        
-        # Set up matplotlib with AZ colors and better styling
-        plt.style.use('default')
-        # Palette: Navy, Mulberry, Lime, Gold, Light Blue, Magenta
-        colors = [AZ_COLORS['navy'], AZ_COLORS['mulberry'], AZ_COLORS['lime_green'], AZ_COLORS['gold'], AZ_COLORS['light_blue'], AZ_COLORS['magenta']]
-        sns.set_palette(colors)
-        
-        # Create larger dashboard (3 rows x 2 cols)
-        fig, axes = plt.subplots(3, 2, figsize=(20, 24))
-        fig.suptitle('AstraZeneca Cash Flow DSS Dashboard', fontsize=24, fontweight='bold', color=AZ_COLORS['navy'])
-        
-        plt.subplots_adjust(hspace=0.4, wspace=0.25)
-        
-        # ---------------------------------------------------------
-        # Row 1: Net Flow Forecast & Ending Balance Check
-        # ---------------------------------------------------------
-        
-        # 1. Weekly Net Cash Flow (History + Forecast)
-        ax1 = axes[0, 0]
-        historical_data = self.forecasts['historical']
-        forecast_1m = self.forecasts['1month']
-        
-        ax1.plot(historical_data.index, historical_data.values, color=AZ_COLORS['navy'], label='Historical Net Flow', alpha=0.6)
-        ax1.plot(forecast_1m.index, forecast_1m.values, color=AZ_COLORS['lime_green'], label='Forecast (1M)', linewidth=3, linestyle='--')
-        
-        # Highlight zero line
-        ax1.axhline(0, color='red', linestyle='-', alpha=0.3)
-        ax1.set_title('Strategic View: Net Cash Flow Trend', color=AZ_COLORS['navy'], fontsize=14, fontweight='bold')
-        ax1.set_ylabel('Net Cash Flow (USD)')
-        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1e6:.1f}M'))
-        ax1.legend()
-        ax1.grid(True, alpha=0.2)
-
-        # 2. Projected Ending Cash Balance (Solvency Check)
-        ax2 = axes[0, 1]
-        
-        if self.df_balance is not None and 'balance' in self.forecasts and '1month' in self.forecasts['balance']:
-            # Plot historical balance if possible (or just last point + forecast)
-            # For simplicity, we plot the Future Projection starting from Last Actual
-            bal_1m = self.forecasts['balance']['1month']
-            bal_6m = self.forecasts['balance']['6month']
-            
-            # Plot 6-month view for strategic planning
-            ax2.plot(bal_6m.index, bal_6m.values, color=AZ_COLORS['mulberry'], label='Projected Balance (6M)', linewidth=2)
-            ax2.plot(bal_1m.index, bal_1m.values, color=AZ_COLORS['lime_green'], label='Next Month Outlook', linewidth=4)
-            
-            # Solvency Line
-            ax2.axhline(0, color='red', linestyle='-', linewidth=2, label='Insolvency Limit')
-            
-            # Dynamic color fill
-            ax2.fill_between(bal_6m.index, bal_6m.values, 0, where=(bal_6m.values < 0), color='red', alpha=0.3, interpolate=True)
-            ax2.fill_between(bal_6m.index, bal_6m.values, 0, where=(bal_6m.values >= 0), color=AZ_COLORS['light_blue'], alpha=0.1, interpolate=True)
-            
-            ax2.set_title('Solvency Monitor: Projected Cash Balance', color=AZ_COLORS['navy'], fontsize=14, fontweight='bold')
-            ax2.set_ylabel('Ending Balance (USD)')
-            ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1e6:.1f}M'))
-            ax2.legend()
-            ax2.grid(True, alpha=0.2)
-        else:
-            ax2.text(0.5, 0.5, 'Cash Balance Data Not Available', ha='center', fontsize=14)
-
-        # ---------------------------------------------------------
-        # Row 2: Cash Flow by Activity (Operating vs Investing)
-        # ---------------------------------------------------------
-        
-        # 3. Forecast by Activity (Line Chart)
-        ax3 = axes[1, 0]
-        if 'activities' in self.forecasts and self.forecasts['activities']:
-            for act, data in self.forecasts['activities'].items():
-                if act == 'Operating': c = AZ_COLORS['lime_green']
-                elif act == 'Investing': c = AZ_COLORS['magenta']
-                elif act == 'Financing': c = AZ_COLORS['gold']
-                else: c = 'gray'
-                
-                # Plot combined history + forecast (1M) for continuity visual
-                # Using simple concatenation for plotting
-                combined_dates = data['historical'].tail(12).index.append(data['1month'].index)
-                combined_vals = np.concatenate([data['historical'].tail(12).values, data['1month'].values])
-                
-                ax3.plot(combined_dates, combined_vals, label=act, color=c, linewidth=2, marker='o', markersize=3)
-            
-            ax3.set_title('Sustainability: Cash Flow by Activity', color=AZ_COLORS['navy'], fontsize=14, fontweight='bold')
-            ax3.set_ylabel('Net Flow (USD)')
-            ax3.legend()
-            ax3.grid(True, alpha=0.2)
-            ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1e6:.1f}M'))
-        else:
-             ax3.text(0.5, 0.5, 'Activity Data Not Available', ha='center')
-
-        # 4. Top Drivers (Category Forecasts)
-        ax4 = axes[1, 1]
-        if 'categories' in self.forecasts:
-            for cat, data in self.forecasts['categories'].items():
-                # Plot 1-month forecast
-                ax4.plot(data['1month'].index, data['1month'].values, label=f"Forecast: {cat}", linestyle='--', linewidth=2)
-                # Plot recent history
-                ax4.plot(data['historical'].tail(8).index, data['historical'].tail(8).values, alpha=0.4)
-            
-            ax4.set_title('Key Drivers Forecast (Top Categories)', color=AZ_COLORS['navy'], fontsize=14, fontweight='bold')
-            ax4.legend()
-            ax4.grid(True, alpha=0.2)
-            ax4.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1e6:.1f}M'))
-
-        # ---------------------------------------------------------
-        # Row 3: Anomaly & Composition
-        # ---------------------------------------------------------
-        
-        # 5. Anomaly Scatter
-        ax5 = axes[2, 0]
-        if len(self.anomalies) > 0 and 'Amount in USD' in self.anomalies.columns:
-            # Color by Risk Score if available
-            if 'risk_score' in self.anomalies.columns:
-                 scatter = ax5.scatter(self.anomalies.index, self.anomalies['Amount in USD'], 
-                                   c=self.anomalies['risk_score'], cmap='Reds', s=100, alpha=0.7, edgecolors='black')
-                 plt.colorbar(scatter, ax=ax5, label='Risk Score (3=High)')
-            else:
-                 ax5.scatter(self.anomalies.index, self.anomalies['Amount in USD'], color='red', alpha=0.6)
-                 
-            ax5.set_title(f'Risk Triage: {len(self.anomalies)} Anomalies Detected', color=AZ_COLORS['navy'], fontsize=14, fontweight='bold')
-            ax5.set_ylabel('Amount (USD)')
-            ax5.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1e6:.1f}M'))
-            ax5.grid(True, alpha=0.2)
-        else:
-             ax5.text(0.5, 0.5, 'No Anomalies Detected', ha='center')
-
-        # 6. Composition (Inflow/Outflow)
-        ax6 = axes[2, 1]
-        if 'cash_flow_direction' in self.weekly_data.columns:
-            flow_totals = self.weekly_data.groupby('cash_flow_direction')['weekly_amount_usd'].sum().abs()
-            
-            # Dynamic explode matching the number of slices
-            explode = [0.05] * len(flow_totals)
-            if len(explode) > 0:
-                explode[0] = 0.05 # Highlight first slice
-            
-            ax6.pie(flow_totals, labels=flow_totals.index, autopct='%1.1f%%', 
-                   colors=[AZ_COLORS['lime_green'], AZ_COLORS['magenta']], startangle=90, explode=explode)
-            ax6.set_title('Cash Flow Composition (In vs Out)', color=AZ_COLORS['navy'], fontsize=14, fontweight='bold')
-
-        # Final formatting and save
-        plt.tight_layout(pad=3.0)
-        plt.savefig('cash_flow_dashboard.png', dpi=300, bbox_inches='tight')
-        print("Visualization saved: cash_flow_dashboard.png")
-        # plt.show() # Commented out for non-interactive environments
-        
-        return True
-
-    def generate_interactive_dashboard(self):
-        """
-        Generate Best-Practice Executive Dashboard (V3).
-        Features: Waterfall, Stacked Area, Bullet Charts, and Deviation Bars.
-        """
-        print("\n=== GENERATING INTERACTIVE DASHBOARD (V3: BEST PRACTICES) ===")
-        
-        # Initialize Subplots
-        fig = make_subplots(
-            rows=4, cols=2,
-            specs=[
-                [{"type": "xy", "colspan": 1}, {"type": "xy"}], # Row 1: Waterfall + Efficiency Lines
-                [{"type": "xy"}, {"type": "xy"}],                # Row 2: Stacked Area + Bullet
-                [{"type": "xy"}, {"type": "xy"}],                # Row 3: Volatility Bars + Risk Matrix
-                [{"type": "table", "colspan": 2}, None]          # Row 4: Actions
-            ],
-            subplot_titles=(
-                "Liquidity Bridge (Net Flow Waterfall)", "Efficiency Trend (Inflow vs Outflow)",
-                "Capital Allocation Over Time (Stacked)", "Top Entity Performance (Actual vs Avg)",
-                "FX Volatility Deviation", "Risk Matrix (Volume vs Volatility)",
-                "Executive Action Item Board"
-            ),
-            vertical_spacing=0.1,
-            row_heights=[0.3, 0.3, 0.2, 0.2]
-        )
-        
-        # --- 1. LIQUIDITY: WATERFALL CHART (Explains Balance Change) ---
-        # Focus on Forecast Period (Next 6 Months)
-        fc_series = self.forecasts['total']['6month']
-        # Resample to Monthly for cleaner Waterfall steps if too long? No, stick to Weekly.
-        # Limit to next 12 weeks for readability or show all.
-        steps = fc_series.iloc[:12] # Next 12 weeks
-        
-        fig.add_trace(go.Waterfall(
-            name="Liquidity Bridge", orientation="v",
-            measure=["relative"] * len(steps),
-            x=steps.index,
-            textposition="outside",
-            text=[f"{x/1e6:.1f}M" for x in steps.values],
-            y=steps.values,
-            connector={"line": {"color": "rgb(63, 63, 63)"}},
-            decreasing={"marker": {"color": "#D7004B"}}, # Magenta
-            increasing={"marker": {"color": "#84BD00"}}, # Lime
-            totals={"marker": {"color": "#003865"}}     # Navy
-        ), row=1, col=1)
-        
-        # --- 2. EFFICIENCY: MOVING AVERAGES (Lines) ---
-        # Inflow vs Outflow
-        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum()
-        outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs()
-        
-        # Align
-        idx = inflow.index.union(outflow.index)
-        inflow = inflow.reindex(idx, fill_value=0).rolling(window=4).mean() # 4-Week Moving Avg
-        outflow = outflow.reindex(idx, fill_value=0).rolling(window=4).mean()
-        
-        fig.add_trace(go.Scatter(x=inflow.index, y=inflow.values, name='Inflow (4W Avg)', line=dict(color='#84BD00', width=2)), row=1, col=2)
-        fig.add_trace(go.Scatter(x=outflow.index, y=outflow.values, name='Outflow (4W Avg)', line=dict(color='#D7004B', width=2)), row=1, col=2)
-        
-        # --- 3. ALLOCATION: STACKED AREA CHART ---
-        # Pivot Activity by Week
-        if 'Activity' in self.weekly_data.columns:
-            act_pivot = self.weekly_data.pivot_table(index='week', columns='Activity', values='weekly_amount_usd', aggfunc='sum').fillna(0)
-            # Use Absolute for allocation composition
-            for col in act_pivot.columns:
-                fig.add_trace(go.Scatter(
-                    x=act_pivot.index, y=act_pivot[col].abs(),
-                    name=col, stackgroup='one',
-                    mode='none' # No lines, just filled area
-                ), row=2, col=1)
-        
-        # --- 4. ENTITY: BULLET CHART (Simulated via Bar + Marker) ---
-        # Top 5 Entities. Target = Avg of last 4 weeks. Actual = Forecast Next Week.
-        if 'entities' in self.forecasts and len(self.forecasts['entities']) > 0:
-            ents = []
-            acts = [] # Actual Forecast
-            targs = [] # History Avg (Target) (Simulated from 1st data point of '1month' essentially, or derived)
-            
-            for ent, model in list(self.forecasts['entities'].items())[:5]:
-                # Actual: Avg Forecast for next month
-                fc_val = model['1month'].mean()
-                # Target: Let's assume Target is 10% less (Improvement) or just benchmark
-                target = fc_val * 0.9 if fc_val < 0 else fc_val * 1.1 
-                
-                ents.append(ent[:15]) # Truncate name
-                acts.append(abs(fc_val)) # Analyze Magnitude
-                targs.append(abs(target))
-            
-            # Bar (Actual)
-            fig.add_trace(go.Bar(
-                x=ents, y=acts, name='Projected Burn', marker_color='#003865', opacity=0.7
-            ), row=2, col=2)
-            # Marker (Target)
-            fig.add_trace(go.Scatter(
-                x=ents, y=targs, mode='markers', name='Benchmark',
-                marker=dict(symbol='line-ew', color='red', size=30, line=dict(width=2))
-            ), row=2, col=2)
-            
-        # --- 5. VOLATILITY: DEVIATION BARS ---
-        if 'fx_rate_variance' in self.df.columns:
-            fx_data = self.df.set_index('posting_date').resample('W')['fx_rate_variance'].mean()
-            mean_var = fx_data.mean()
-            deviation = fx_data - mean_var
-            
-            colors = ['red' if v > 0 else 'green' for v in deviation.values] # Red = Higher Var than normal
-            
-            fig.add_trace(go.Bar(
-                x=deviation.index, y=deviation.values,
-                name='Volatility Deviation', marker_color=colors
-            ), row=3, col=1)
-
-        
-        # --- 1. FORECAST (Strategic View) ---
-        # Downsample History if too large (Performance)
-
-            
-        # --- 6. RISK MATRIX: VOLATILITY vs VOLUME (Insightful Hub) ---
-        if 'Category' in self.weekly_data.columns:
-            # Calculate Risk Metrics
-            risk_df = self.weekly_data.groupby('Category')['weekly_amount_usd'].agg(['mean', 'std']).fillna(0)
-            risk_df['CV'] = risk_df['std'] / risk_df['mean'].abs().replace(0, 1) # Coeff of Variation
-            
-            # Filter for significant items
-            risk_df = risk_df[risk_df['mean'].abs() > 1000] 
-            
-            fig.add_trace(go.Scattergl(
-                x=risk_df['mean'], 
-                y=risk_df['std'],
-                mode='markers+text',
-                text=risk_df.index,
-                textposition='top center',
-                marker=dict(
-                    size=risk_df['CV'] * 20, # Size by relative risk
-                    sizemode='area',
-                    sizeref=2.*max(risk_df['CV'])/(40.**2),
-                    sizemin=4,
-                    color=risk_df['std'], # Color by Volatility
-                    colorscale='Portland',
-                    showscale=True
-                ),
-                name='Risk Matrix'
-            ), row=3, col=2)
-            fig.update_xaxes(type="log", title_text="Avg Weekly Volume (Log)", row=3, col=2)
-            fig.update_yaxes(title_text="Volatility (Std Dev)", row=3, col=2)
-            
-        # --- 7. ACTION BOARD (Table) ---
-        # Calculate Headline Efficiency
-        total_in = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0]['weekly_amount_usd'].sum()
-        total_out = abs(self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0]['weekly_amount_usd'].sum())
-        efficiency = (total_in / total_out) if total_out != 0 else 0
-        
-        alerts = [
-            ["Efficiency", f"Ratio: {efficiency:.2f} (Target > 1.0)", "High" if efficiency < 0.9 else "Medium"],
-            ["Liquidity", "Waterfall shows Project Net Flow impact", "Info"],
-            ["Risk Monitor", "Check Matrix for High Vol/High Spend items", "Medium"]
-        ]
-        
-        # Professional Styling
-        fig.add_trace(go.Table(
-            header=dict(values=["<b>Area</b>", "<b>Insight</b>", "<b>Priority</b>"],
-                        fill_color='#003865',
-                        align='left',
-                        font=dict(color='white', size=13)),
-            cells=dict(values=list(zip(*alerts)),
-                       fill_color=[['white', '#f4f4f4']*5], # Alternating rows
-                       align='left',
-                       font=dict(color='black', size=12),
-                       height=30)
-        ), row=4, col=1)
-        
-        # Polish Layout
-        fig.update_layout(
-            height=1200, 
-            width=1400, 
-            title_text="<b>AstraZeneca Strategic Cash Flow Command Center (Pure Data)</b>",
-            title_x=0.5, 
-            template="plotly_white",
-            showlegend=False,
-            font=dict(family="Arial, sans-serif")
-        )
-        
-        # Save
-        out_file = 'AstraZeneca_Interactive_Insights_CommandCenter.html'
-        fig.write_html(out_file)
-        print(f"Command Center Dashboard generated: {out_file}")
-    
     def generate_insights(self):
         """Generate key insights and recommendations."""
         print("\n=== GENERATING INSIGHTS & RECOMMENDATIONS ===")
@@ -1330,7 +1089,7 @@ def main():
         analyzer.create_forecasts()
         analyzer.detect_anomalies()
         analyzer.generate_visualizations()
-        analyzer.generate_interactive_dashboard() # [NEW] Interactive Output
+        # analyzer.generate_interactive_dashboard() # REMOVED DEPRECATED interactive dashboard
         insights = analyzer.generate_insights()
         
         # Answer the specific problem statement questions

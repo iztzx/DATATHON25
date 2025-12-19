@@ -71,6 +71,29 @@ def generate_powerbi_files():
     fc['Type'] = 'Forecast'
     fc.to_csv(f'{output_dir}/Fact_Forecasts.csv', index=False)
     print(f"Generated {output_dir}/Fact_Forecasts.csv")
+
+    # 7. FACT_BUDGET (Simulated for Bullet Chart)
+    # Rationale: User wants to see "Burn vs Budget". We simulate Budget = Actual * random split.
+    # Group by Key Dimensions (Category, Activity, Name, Quarter)
+    # Using 'fact_actuals' as base
+    
+    print("Generating Simulated Budget Data for PowerBI Bullet Charts...")
+    fact_budget = fact_actuals.copy()
+    
+    # Simulate Budget Logic:
+    # If Outflow (negative), Budget might be slightly less negative (Target) or more (Allowance).
+    # Let's assume Budget is usually 90% to 110% of Actuals.
+    np.random.seed(42) # Consistent simulation
+    noise = np.random.uniform(0.9, 1.1, size=len(fact_budget))
+    
+    # We only care about budget for Amounts really
+    if 'Amount in USD' in fact_budget.columns:
+        fact_budget['Budget_Amount_USD'] = fact_budget['Amount in USD'] * noise
+        
+    # Rename for clarity in PowerBI
+    fact_budget = fact_budget[['posting_date', 'Name', 'Category', 'Activity', 'Budget_Amount_USD']]
+    fact_budget.to_csv(f'{output_dir}/Fact_Budget.csv', index=False)
+    print(f"Generated {output_dir}/Fact_Budget.csv (Simulated)")
     
     print("\nREADY FOR POWER BI:")
     print("1. Open Power BI")
