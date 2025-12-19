@@ -312,31 +312,48 @@ class CashFlowAnalyzer:
         last_level = level
         last_trend = trend
         
-        # 1-month forecast (4 weeks)
-        forecast_1month_dates = pd.date_range(start=last_date + timedelta(days=1), periods=4, freq='W-MON')  # Start day after, align to Monday
+        # Get actual historical changes to use as pattern (last 8 weeks)
+        recent_changes = series.diff().dropna().tail(8).values.tolist()
+        if len(recent_changes) < 2:
+            recent_changes = [0, 0]  # Fallback
+        
+        # 1-month forecast (4 weeks) - Use actual historical change pattern
+        forecast_1month_dates = pd.date_range(start=last_date + timedelta(days=1), periods=4, freq='W-MON')
         forecast_1month_values = []
-        historical_volatility = series.std() if len(series) > 1 else 0
+        current_level = last_level
         
         for i in range(4):
-            trended_value = last_level + (i + 1) * last_trend
-            variation = np.random.normal(0, historical_volatility * 0.3)
-            forecast_1month_values.append(trended_value + variation)
+            # Apply actual historical change pattern (cycling through recent changes)
+            change_idx = i % len(recent_changes)
+            current_level = current_level + recent_changes[change_idx]
+            forecast_1month_values.append(current_level)
             
         forecast_1month = pd.Series(forecast_1month_values, index=forecast_1month_dates)
         
-        # 6-month forecast (24 weeks)
-        forecast_6month_dates = pd.date_range(start=last_date + timedelta(days=1), periods=24, freq='W-MON')  # Start day after, align to Monday
+        # 6-month forecast (24 weeks) - Trend + realistic noise from historical volatility
+        forecast_6month_dates = pd.date_range(start=last_date + timedelta(days=1), periods=24, freq='W-MON')
         forecast_6month_values = []
-        damping_factor = 0.95
         
+        # Use historical volatility for natural variation (seeded for reproducibility)
+        np.random.seed(42)  # Fixed seed = same forecast each run
+        historical_std = series.std() if len(series) > 1 else abs(last_level) * 0.1
+        
+        current_level = last_level
         for i in range(24):
-            damped_trend = last_trend * (damping_factor ** i)
-            trended_value = last_level + (i + 1) * damped_trend
-            variation_std = historical_volatility * 0.3 * (1 - i/24)
-            variation = np.random.normal(0, variation_std)
-            forecast_6month_values.append(trended_value + variation)
+            # Apply damped trend
+            damped_trend = last_trend * (0.97 ** i)
+            current_level = current_level + damped_trend
+            # Add realistic noise (matching historical amplitude)
+            noise = np.random.normal(0, historical_std * 0.6)
+            forecast_6month_values.append(current_level + noise)
             
         forecast_6month = pd.Series(forecast_6month_values, index=forecast_6month_dates)
+
+
+
+
+
+
         
         # Accuracy metrics
         mae, rmse = 0, 0
@@ -1394,13 +1411,16 @@ class CashFlowAnalyzer:
                         drivers = " | ".join([f"{c}: ${v/1e6:.1f}M" for c, v in top_cats.items()])
                         top_cat = top_cats.index[0]
                     else:
-                        drivers = "No data"
-                        top_cat = "Mixed"
-                    dip_weeks_1m.append((wk, val, drivers))
+                        # Fallback: estimate from overall top outflow categories
+                        overall_cats = self.df.groupby('Category')['Net_Amount_USD'].sum().sort_values().head(3)
+                        drivers = " | ".join([f"{c}: ${v/1e6:.1f}M" for c, v in overall_cats.items()]) if not overall_cats.empty else "General trend"
+                        top_cat = overall_cats.index[0] if not overall_cats.empty else "Operating"
+                    dip_weeks_1m.append((wk, val, f"Estimation based on past data:<br>{drivers}"))
                     risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M ({top_cat})")
             # Add dip markers with hover showing drivers
             if dip_weeks_1m:
-                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], text=[d[2] for d in dip_weeks_1m], hovertemplate='⚠️ DATA-BASED ESTIMATE<br>%{text}<extra></extra>', mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Forecast Dip (Estimate)'))
+                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], text=[d[2] for d in dip_weeks_1m], hovertemplate='%{text}<extra></extra>', mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Forecast Dip (Est.)'))
+
 
 
         style_fig(f2, "1-Month Outlook")
@@ -1442,6 +1462,8 @@ class CashFlowAnalyzer:
         style_fig(f4, "Category Analysis (Inflow/Outflow)")
         f4.update_layout(height=500)
         figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
+
 
 
         # METRICS
@@ -1536,6 +1558,7 @@ class CashFlowAnalyzer:
                 <div class="card" id="c2">{figures_html[2]}</div>
                 <div class="card" id="c3">{figures_html[3]}</div>
                 <div class="card full" id="c4">{figures_html[4]}</div>
+
 
 
                 <div class="card full" style="padding:15px;">
