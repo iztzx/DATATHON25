@@ -1295,12 +1295,18 @@ class CashFlowAnalyzer:
             if 'spikes' in self.anomaly_metrics:
                 sx, sy = [x[0] for x in self.anomaly_metrics['spikes']], [x[1] for x in self.anomaly_metrics['spikes']]
                 f0.add_trace(go.Scatter(x=sx, y=sy, mode='markers', marker=dict(color=c_neg, size=10, line=dict(color='white', width=2)), name='Outlier'))
-        # Weekend Transactions Overlay (as separate trace within Safe Zone)
+        # Weekend Transactions Overlay
         wknd_data = self.df[self.df['posting_date'].dt.dayofweek >= 5].groupby('week')['Amount in USD'].sum()
         if not wknd_data.empty:
-            f0.add_trace(go.Scatter(x=wknd_data.index, y=wknd_data.values, mode='markers', marker=dict(color=AZ['gold'], size=8, symbol='diamond'), name='Weekend Activity'))
-        style_fig(f0, "Anomaly Check: Weekend & Safe Zone")
+            f0.add_trace(go.Scatter(x=wknd_data.index, y=wknd_data.values, mode='markers', marker=dict(color=AZ['gold'], size=8, symbol='diamond'), name='Weekend'))
+        # Round Number Risk Overlay (>$100K exact multiples of $1K)
+        round_mask = (self.df['Amount in USD'].abs() >= 100000) & (self.df['Amount in USD'].abs() % 1000 == 0)
+        round_data = self.df[round_mask].groupby('week')['Amount in USD'].sum()
+        if not round_data.empty:
+            f0.add_trace(go.Scatter(x=round_data.index, y=round_data.values, mode='markers', marker=dict(color='#FF6B35', size=10, symbol='square'), name='Round $'))
+        style_fig(f0, "Anomaly Check: Safe Zone + Round $ + Weekend")
         figures_html.append(pio.to_html(f0, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
+
 
         # --- FIG 1: ENTITY GEO BUBBLE MAP (Net Flow + Duplicates) ---
         f1 = go.Figure()
@@ -1348,6 +1354,23 @@ class CashFlowAnalyzer:
         f2.add_trace(go.Scatter(x=hist.index, y=hist.values, name="History", line=dict(color=c_text, width=3)))
         risk_1m = []
         dip_weeks_1m = []
+        
+        # Historical Dip Analysis (trailing weeks)
+        avg_hist = hist.mean()
+        hist_dips = []
+        for wk, val in hist.items():
+            if val < avg_hist * 0.7:
+                w_num = wk.isocalendar()[1] if hasattr(wk, 'isocalendar') else 0
+                grp = self.df[self.df['posting_date'].dt.isocalendar().week == w_num].groupby('Category')['Net_Amount_USD'].sum()
+                if not grp.empty:
+                    top_cats = grp.sort_values().head(3)
+                    drivers = " | ".join([f"{c}: ${v/1e6:.1f}M" for c, v in top_cats.items()])
+                else:
+                    drivers = "No data"
+                hist_dips.append((wk, val, f"PAST: {drivers}"))
+        if hist_dips:
+            f2.add_trace(go.Scatter(x=[d[0] for d in hist_dips], y=[d[1] for d in hist_dips], text=[d[2] for d in hist_dips], hovertemplate='%{text}<extra></extra>', mode='markers', marker=dict(color=AZ['blue'], size=12, symbol='triangle-down', line=dict(color='white', width=2)), name='Hist Dip'))
+
         if 'total' in self.forecasts:
             fc_1m = self.forecasts['total']['1month']
             rmse = self.forecasts['total']['rmse']
@@ -1358,18 +1381,27 @@ class CashFlowAnalyzer:
             # Confidence: starts from first forecast point
             upper_c, lower_c = fc_1m + rmse, fc_1m - rmse
             f2.add_trace(go.Scatter(x=list(fc_1m.index)+list(fc_1m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(196,214,0,0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
-            # Risk Detection + Dip Highlighting
+            # Risk Detection + Dip Highlighting with Top Driver RCA
             avg_h = hist.mean()
+            dip_hovers = []
             for wk, val in fc_1m.items():
                 if val < avg_h * 0.7:
-                    dip_weeks_1m.append((wk, val))
                     w_num = wk.isocalendar()[1] if hasattr(wk, 'isocalendar') else 0
                     grp = self.df[self.df['posting_date'].dt.isocalendar().week == w_num].groupby('Category')['Net_Amount_USD'].sum() if w_num else pd.Series(dtype=float)
-                    cat = grp.idxmin() if not grp.empty else "Mixed"
-                    risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M ({cat})")
-            # Add dip markers
+                    # Get top 3 drivers (sorted by absolute value, showing actual)
+                    if not grp.empty:
+                        top_cats = grp.sort_values().head(3)  # Most negative = biggest outflow
+                        drivers = " | ".join([f"{c}: ${v/1e6:.1f}M" for c, v in top_cats.items()])
+                        top_cat = top_cats.index[0]
+                    else:
+                        drivers = "No data"
+                        top_cat = "Mixed"
+                    dip_weeks_1m.append((wk, val, drivers))
+                    risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M ({top_cat})")
+            # Add dip markers with hover showing drivers
             if dip_weeks_1m:
-                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Dip Alert'))
+                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], text=[d[2] for d in dip_weeks_1m], hovertemplate='%{text}<extra></extra>', mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Dip Alert'))
+
 
         style_fig(f2, "1-Month Outlook: Risk Detection")
         figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
@@ -1425,10 +1457,12 @@ class CashFlowAnalyzer:
         round_val = self.df.loc[round_mask, 'Amount in USD'].abs().sum()
         
         table_html = "<table class='action-table'><thead><tr><th>Issue</th><th>Action (Based on Past Data)</th><th>Priority</th><th></th></tr></thead><tbody>"
-        actions = [
-            (f"Duplicates: ${dupe_val/1e6:.1f}M ({len(dupe_by_ent)} entities)", "Audit vendor invoices", "High", "c1"),
-            (f"Round Numbers: ${round_val/1e6:.1f}M ({round_cnt} txns)", "Verify supporting docs", "Medium", "c0"),
-        ]
+        actions = []
+        if dupe_val > 0:
+            actions.append((f"Duplicates: ${dupe_val/1e6:.1f}M ({len(dupe_by_ent)} entities)", "Audit vendor invoices", "High", "c1"))
+        if round_cnt > 0:
+            actions.append((f"Round Numbers: ${round_val/1e6:.1f}M ({round_cnt} txns)", "Verify supporting docs", "Medium", "c0"))
+
 
         # Add ALL forecast dips with RCA
         for r in risk_1m:
