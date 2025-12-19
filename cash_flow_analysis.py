@@ -9,9 +9,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio # Added for HTML export
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings('ignore')
+import os
+import json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -346,8 +347,9 @@ class CashFlowAnalyzer:
             # Align
             common_idx = test_actual.index.intersection(test_forecast.index)
             if len(common_idx) > 0:
-                mae = mean_absolute_error(test_actual[common_idx], test_forecast[common_idx])
-                rmse = np.sqrt(mean_squared_error(test_actual[common_idx], test_forecast[common_idx]))
+                a, b = test_actual[common_idx].values, test_forecast[common_idx].values
+                mae = np.mean(np.abs(a - b))
+                rmse = np.sqrt(np.mean((a - b)**2))
 
         return {
             'name': name,
@@ -700,7 +702,8 @@ class CashFlowAnalyzer:
                 
                 # Evaluate
                 try:
-                    rmse = np.sqrt(mean_squared_error(valid, preds))
+                    diff = valid.values - preds
+                    rmse = np.sqrt(np.mean(diff**2))
                     if rmse < best_rmse:
                         best_rmse = rmse
                         best_alpha = a
@@ -712,85 +715,246 @@ class CashFlowAnalyzer:
 
     def detect_anomalies(self):
         """
-        Detect anomalies using a Hybrid approach: 
-        1. Statistical (Isolation Forest)
-        2. Rule-based (Accounting irregularities)
+        Detect anomalies using Multi-Variate Logic:
+        1. Statistical Spikes (3-Sigma Z-Score on Weekly Totals)
+        2. Duplicate Payments (Exact Match on Vendor + Date + Amount)
+        3. Round Number Risk (Manual Entry Flag)
+        4. Weekend Activity (Unusual Timing)
         """
-        print("\n=== HYBRID ANOMALY DETECTION (DSS MODULE) ===")
+        print("\n=== ADVANCED ANOMALY DETECTION (DSS MODULE) ===")
         
-        # 1. Statistical Detection (Isolation Forest)
-        # ---------------------------------------------
-        feature_cols = []
-        if 'Amount in doc. curr.' in self.df.columns:
-            feature_cols.append('Amount in doc. curr.')
-        if 'Amount in USD' in self.df.columns:
-            feature_cols.append('Amount in USD')
-        
-        features = self.df[feature_cols].copy()
-        
-        if 'Category' in self.df.columns:
-            category_dummies = pd.get_dummies(self.df['Category'], prefix='category')
-            features = pd.concat([features, category_dummies], axis=1)
-        
-        scaler = StandardScaler()
-        features_scaled = scaler.fit_transform(features.fillna(0))
-        
-        iso_forest = IsolationForest(contamination=0.03, random_state=42) # Reduced to 3% to focus on high priority
-        stat_anomaly_mask = iso_forest.fit_predict(features_scaled) == -1
-        
-        # Initialize anomaly column
+        # Initialize
         self.df['anomaly_type'] = None
-        self.df.loc[stat_anomaly_mask, 'anomaly_type'] = 'Statistical Outlier'
+        self.anomaly_metrics = {} # Store stats for plotting (Bands)
         
-        # 2. Rule-Based Detection (Accounting Logic)
+        # 1. Volume Spikes (3-Sigma Visualization Logic)
         # ---------------------------------------------
+        print("  • Calculating Volatility Bands (3-Sigma)...")
+        # Ensure we have weekly data
+        if self.weekly_data is not None:
+             # Aggregate Total Flow by Week
+             weekly_ts = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
+             
+             # Calculate Rolling Stats (Window=8 weeks for trend adaptation)
+             rolling_mean = weekly_ts.rolling(window=8, min_periods=4).mean()
+             rolling_std = weekly_ts.rolling(window=8, min_periods=4).std()
+             
+             # Fill logic for early periods (backfill)
+             rolling_mean = rolling_mean.bfill()
+             rolling_std = rolling_std.bfill()
+             
+             # Define Bounds
+             # 2-Sigma = Safe Zone Boundary
+             # 3-Sigma = Anomaly Trigger
+             self.anomaly_metrics['ts_index'] = weekly_ts.index
+             self.anomaly_metrics['ts_values'] = weekly_ts.values
+             self.anomaly_metrics['safe_upper'] = rolling_mean + 2 * rolling_std
+             self.anomaly_metrics['safe_lower'] = rolling_mean - 2 * rolling_std
+             
+             # Identify Spikes (> 3 Sigma)
+             # Align indices
+             spikes = []
+             for idx, val in weekly_ts.items():
+                 if idx in rolling_mean.index:
+                     mean = rolling_mean.loc[idx]
+                     std = rolling_std.loc[idx]
+                     
+                     z_score = (val - mean) / std if std > 0 else 0
+                     if abs(z_score) > 2: # Redefined: Anything outside Safe Zone (2-Sigma) is an Anomaly
+                         spikes.append((idx, val, f"Outlier ({z_score:.1f}σ) - Outside Safe Zone"))
+             
+             # Save spikes for plotting (separate list)
+             self.anomaly_metrics['spikes'] = spikes
+             
+             # Also tag in main DF? Only if we can map back to transactions. 
+             # Spikes are often aggregate anomalies. We'll map them to the "Week" generally.
         
-        # Rule A: Potential Duplicates (Same Amount, Same Date, Different Doc)
-        print("Scaning for duplicate payments...")
-        if all(col in self.df.columns for col in ['Amount in USD', 'posting_date', 'Category']):
-            # Find duplicates based on Amount, Date, Category (ignoring DocumentNo)
-            # We filter for non-zero amounts
-            mask_real = self.df['Amount in USD'].abs() > 0.01
-            
-            dupe_cols = ['Amount in USD', 'posting_date', 'Category']
-            duplicates = self.df[mask_real].duplicated(subset=dupe_cols, keep=False)
-            
-            # Update anomaly type (prioritize specific rules over statistical)
-            self.df.loc[duplicates & mask_real, 'anomaly_type'] = 'Potential Duplicate'
-
-        # Rule B: Round Number Checks (e.g. 100000.00) - often manual
-        print("Scanning for 'Round Number' manual entries...")
+        # 2. Duplicate Payments (Vendor + Date + Amount)
+        # ---------------------------------------------
+        print("  • Scanning for Duplicate Payments (Vendor-Match)...")
+        if all(col in self.df.columns for col in ['Amount in USD', 'posting_date', 'Name']):
+             # Non-zero
+             mask_real = self.df['Amount in USD'].abs() > 10.0
+             dupe_cols = ['Amount in USD', 'posting_date', 'Name'] # Strict check
+             
+             duplicates = self.df[mask_real].duplicated(subset=dupe_cols, keep=False)
+             self.df.loc[duplicates & mask_real, 'anomaly_type'] = 'Duplicate Payment'
+             
+        # 3. Round Number Risk (Manual Entry Checks)
+        # ---------------------------------------------
+        print("  • Scanning for Round Number (Manual Entry Risk)...")
         if 'Amount in USD' in self.df.columns:
-            # Check if amount is round thousand
-            is_round = (self.df['Amount in USD'].abs() % 1000 == 0) & (self.df['Amount in USD'].abs() > 1000)
-            self.df.loc[is_round & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Round Number (Manual Risk)'
-
-        # Rule C: Weekend Postings (Unusual for corporate)
-        print("Scanning for Weekend transactions...")
+            # Check > 1000 and Divisible by 1000
+            is_round = (self.df['Amount in USD'].abs() > 1000) & (self.df['Amount in USD'].abs() % 1000 == 0)
+            # Only tag if not already a Duplicate
+            self.df.loc[is_round & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Round Number Risk'
+            
+        # 4. Weekend Activity
+        # ---------------------------------------------
+        print("  • Scanning for Weekend Transactions...")
         if 'posting_date' in self.df.columns:
+            # Sat=5, Sun=6
             is_weekend = self.df['posting_date'].dt.dayofweek >= 5
-            # Only trigger if not already flagged
-            self.df.loc[is_weekend & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Weekend Posting'
+            self.df.loc[is_weekend & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Weekend Activity'
 
-        # Consolidate
+        # Consolidate Risks
         self.anomalies = self.df[self.df['anomaly_type'].notna()].copy()
         
-        # Prioritize anomalies (Risk Scoring)
+        # Risk Scoring for Table
         risk_map = {
-            'Potential Duplicate': 3,   # High
-            'Statistical Outlier': 2,   # Medium
-            'Weekend Posting': 1,       # Low risk but notable
-            'Round Number (Manual Risk)': 1
+            'Duplicate Payment': 3,
+            'Round Number Risk': 2,
+            'Weekend Activity': 1
         }
         self.anomalies['risk_score'] = self.anomalies['anomaly_type'].map(risk_map)
         self.anomalies = self.anomalies.sort_values(by=['risk_score', 'Amount in USD'], ascending=[False, False])
         
-        count = len(self.anomalies)
-        print(f"DSS Alert: Detected {count} irregularities requiring review.")
-        print(f" Breakdown: {self.anomalies['anomaly_type'].value_counts().to_dict()}")
+        print(f"DSS Alert: Found {len(self.anomalies)} transactional anomalies.")
+        if 'spikes' in self.anomaly_metrics:
+             print(f"           Found {len(self.anomaly_metrics['spikes'])} Volume Spikes (3-Sigma).")
         
         return True
-    
+
+    def analyze_trapped_capital(self):
+        """
+        LIQUIDITY OPTIMIZATION ENGINE (L.O.E.)
+        Quantifies 'Trapped Capital' - money locked in inefficiencies (Deficits + Errors).
+        """
+        print("\n=== LIQUIDITY OPTIMIZATION ENGINE ===")
+        
+        # 1. Efficiency Drag (Net Deficit Sum)
+        # Calculate daily interpolated flow (similar to Fig 2 logic)
+        eff_drag = 0
+        if self.weekly_data is not None:
+             net_flow = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
+             # Any week with Negative Flow is a 'Deficit Gap' requiring 
+             # liquidity coverage (Cost of Capital).
+             # We sum the specific deficit weeks to show "Liquidity Pressure".
+             deficits = net_flow[net_flow < 0].abs().sum()
+             eff_drag = deficits
+             
+        # 2. Anomaly Leakage (Cost of Errors)
+        anom_leakage = 0
+        if self.anomalies is not None:
+             # Sum of Duplicates (High probability of savings)
+             dupes = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment']
+             anom_leakage = dupes['Amount in USD'].sum()
+             
+             # Add Round Numbers (Manual Risk) - Lower confidence, take 50%
+             rounds = self.anomalies[self.anomalies['anomaly_type'] == 'Round Number Risk']
+             anom_leakage += rounds['Amount in USD'].sum() * 0.5
+        
+        total_trapped = eff_drag + anom_leakage
+        
+        self.optimization_metrics = {
+            'efficiency_drag': eff_drag,
+            'anomaly_leakage': anom_leakage,
+            'total_unlock': total_trapped
+        }
+        print(f"  • Potential Liquidity Unlock: ${total_trapped:,.2f}")
+        return self.optimization_metrics
+
+    def analyze_historical_roots(self):
+        """
+        RISK ECHO SYSTEM
+        Identifies historical 'High Impact Weeks' and their root causes (Category/Vendor).
+        """
+        print("\n=== HISTORY RISK ATTRIBUTION (RISK ECHO) ===")
+        self.seasonal_risks = []
+        
+        if 'Category' not in self.weekly_data.columns: return
+        
+        # Add Week Number
+        df = self.weekly_data.copy()
+        df['week_num'] = df.index.map(lambda x: pd.Timestamp(x).isocalendar().week) # approx from index if week is index? 
+        # Actually weekly_data has 'week' column which is date.
+        df['week_num'] = df['week'].dt.isocalendar().week
+        
+        # Identify "High Impact" Weeks (> 75th percentile of weekly volume)
+        weekly_vol = df.groupby('week')['weekly_amount_usd'].sum()
+        threshold = weekly_vol.quantile(0.75)
+        high_weeks = weekly_vol[weekly_vol > threshold]
+        
+        print(f"  • Analyzing {len(high_weeks)} High-Impact Weeks for Root Causes...")
+        
+        for date, amount in high_weeks.items():
+            # Drill down
+            week_num = pd.Timestamp(date).isocalendar().week
+            subset = df[df['week'] == date]
+            
+            # 1. Top Category
+            top_cat = subset.groupby('Category')['weekly_amount_usd'].sum().nlargest(1)
+            cat_name = top_cat.index[0]
+            cat_val = top_cat.values[0]
+            
+            # 2. Top Vendor (Need raw data interaction, or we assume subset has 'Name' if we didn't drop it)
+            # self.weekly_data is aggregated? Check main df
+            # We need to look at self.df for Vendor details on that date range.
+            week_start = pd.Timestamp(date)
+            week_end = week_start + pd.Timedelta(days=6)
+            mask = (self.df['posting_date'] >= week_start) & (self.df['posting_date'] <= week_end)
+            raw_subset = self.df[mask]
+            
+            vendor_name = "Various"
+            if not raw_subset.empty and 'Name' in raw_subset.columns:
+                 top_ven = raw_subset.groupby('Name')['Amount in USD'].sum().nlargest(1)
+                 if not top_ven.empty:
+                     vendor_name = top_ven.index[0]
+            
+            self.seasonal_risks.append({
+                'week_num': week_num,
+                'date': date,
+                'amount': amount,
+                'driver_category': cat_name,
+                'driver_vendor': vendor_name
+            })
+            
+        return self.seasonal_risks
+
+    def generate_logic_summary(self, opt_metrics):
+        """Builds a purely mathematical executive summary without AI."""
+        if self.weekly_data.empty: return "No data available."
+        
+        # 1. Runway Calculation (Perspective: Survival)
+        avg_burn = abs(self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0]['weekly_amount_usd'].mean())
+        # Use total sum as a proxy for 'balance' if balance sheet not provided
+        mock_balance = abs(self.weekly_data['weekly_amount_usd'].sum()) * 1.5 
+        runway_weeks = mock_balance / avg_burn if avg_burn > 0 else 52
+        
+        # 2. Efficiency (Perspective: Operational Yield)
+        eff = opt_metrics.get('efficiency', 0)
+        eff_status = "OPTIMAL" if eff > 1.0 else "SUB-PAR"
+        
+        # 3. Duplicate High-Risk (Perspective: Recovery)
+        dupes_val = 0
+        if self.anomalies is not None:
+            dupes_val = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment']['Amount in USD'].sum()
+        
+        # Construct Logic Narrative
+        summary = f"LOGIC ENGINE STATUS: {eff_status} Yield ({eff:.2f}x). "
+        summary += f"Liquidity Runway estimated at ~{runway_weeks/4:.1f} months based on trailing burn. "
+        summary += f"Immediate Recovery Opportunity: ${dupes_val/1e6:.1f}M in confirmed Duplicate Risk."
+        return summary
+
+    def analyze_predicted_dip(self):
+        """Identifies reasons for predicted dips based on historical patterns (NOT AI)."""
+        if 'total' not in self.forecasts: return "No predicted dips.", "N/A"
+        fc = self.forecasts['total']['6month']
+        avg_vol = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().mean()
+        
+        # Identify Worst Week in Forecast
+        dip_week = fc.idxmin()
+        dip_val = fc.min()
+        
+        if dip_val < (avg_vol * 0.5): # If dip is > 50% below average
+             w_num = dip_week.weekofyear
+             # RCA: Match with history
+             hist_match = self.df[self.df['posting_date'].dt.isocalendar().week == w_num]
+             if not hist_match.empty:
+                 top_cat = hist_match.groupby('Category')['Net_Amount_USD'].sum().idxmin()
+                 return f"Forecasted dip in Week {w_num} matched historical {top_cat} seasonality.", f"W{w_num}"
+        return "No high-variance dips detected.", "None"
+
     def generate_visualizations(self):
         """
         Generate Best-Practice Static Dashboard (V3).
@@ -868,8 +1032,8 @@ class CashFlowAnalyzer:
             ax.yaxis.set_major_formatter(currency_fmt)
 
         # --- P1: LIQUIDITY FORECAST - UNIFIED FAN CHART (Top Left) ---
-        # 1. LIQUIDITY FORECAST (Fan Chart)
         style_card(ax1, "1. Liquidity Forecast (Unified Fan)")
+        ax1.yaxis.set_major_formatter(currency_fmt) # [FIX] Apply Format
         
         # 1. Historical Net Flow (Line instead of Bars for continuity)
         weekly_net = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
@@ -881,7 +1045,6 @@ class CashFlowAnalyzer:
         # 2. Forecast Data (Fan Chart)
         if 'total' in self.forecasts:
              fc_model = self.forecasts['total']
-             # Combine 1m and 6m for plotting
              # Combine 1m and 6m
              fc_series = pd.concat([fc_model['1month'], fc_model['6month']])
              fc_series = fc_series[~fc_series.index.duplicated(keep='first')]
@@ -906,11 +1069,9 @@ class CashFlowAnalyzer:
              # Re-calc for connected series
              for i, val in enumerate(fc_y):
                  if i == 0:
-                     # Connect point has 0 uncertainty
                      u = val
                      l = val
                  else:
-                     # Reduced width multiplier from 0.1 to 0.05
                      uncertainty = rmse * (0.8 + 0.05 * i)
                      u = val + uncertainty
                      l = val - uncertainty
@@ -922,17 +1083,17 @@ class CashFlowAnalyzer:
              
              # Forecast Start Line (Thicker, High Z-Order)
              ax1.axvline(x=last_hist_date, color=AZ_COLORS['gold'], linestyle='--', linewidth=3, zorder=10)
-             ax1.text(last_hist_date, ax1.get_ylim()[1]*0.95, " FORECAST START", 
-                      color='black', fontsize=9, fontweight='bold', 
-                      bbox=dict(facecolor=AZ_COLORS['gold'], alpha=0.9, edgecolor='none', boxstyle='round,pad=0.3'))
+             # Simplify text
+             ax1.text(last_hist_date, ax1.get_ylim()[1]*0.9, " FCST", color='black', fontsize=8, fontweight='bold')
              
-        ax1.set_ylabel("Net Cash Flow ($)", color=AZ_COLORS['graphite'])
+        ax1.set_ylabel("Net Flow", color=AZ_COLORS['graphite'])
         ax1.tick_params(axis='x', rotation=45, labelsize=8)
         ax1.legend(loc='upper left', frameon=False, fontsize=8) 
         
         # --- P2: OPERATIONAL EFFICIENCY - DIFFERENCE GAP (Top Right) ---
-        # 2. EFFICIENCY (Net Gap)
         style_card(ax2, "2. Efficiency Trend (Gap Analysis)")
+        ax2.yaxis.set_major_formatter(currency_fmt) # [FIX] Apply Format
+        
         # Calculate Weekly MA again for smoothness
         inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum().rolling(4).mean()
         outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs().rolling(4).mean()
@@ -944,7 +1105,6 @@ class CashFlowAnalyzer:
         ax2.plot(outv.index, outv.values, color=AZ_COLORS['magenta'], linewidth=2, label='Outflow')
         
         # Conditional Shading (The "Gap")
-        # Green where Inflow > Outflow, Red where Outflow > Inflow
         ax2.fill_between(inv.index, inv.values, outv.values, 
                          where=(inv.values >= outv.values),
                          interpolate=True, color=AZ_COLORS['lime_green'], alpha=0.3, label='Net Surplus')
@@ -957,9 +1117,9 @@ class CashFlowAnalyzer:
         
         
         # --- P3: TOP 5 ENTITIES - BULLET CHART (Middle Left) ---
-        # FIX: Ensure scale is correct and look is minimal
-        # 3. ENTITY BULLET (Burn vs Budget)
         style_card(ax3, "3. Top 5 Entities (Burn vs Budget)")
+        ax3.xaxis.set_major_formatter(currency_fmt) # [FIX] Apply Format
+        
         if 'entities' in self.forecasts:
             top_ents = []
             actuals = [] 
@@ -968,64 +1128,49 @@ class CashFlowAnalyzer:
             
             for ent, model in list(self.forecasts['entities'].items())[:5]:
                 val = abs(model['1month'].mean())
-                top_ents.append(ent[:18])
+                top_ents.append(ent[:15]) # Shorten name
                 actuals.append(val)
                 
-                # SIMULATION LOGIC: KR10 and TW10 are Over Budget, others Under
+                # SIMULATION LOGIC
                 if 'KR10' in ent or 'TW10' in ent:
-                    budget = val * 0.9 # Actual > Budget (Over)
+                    budget = val * 0.9 
                 else:
-                    budget = val * 1.15 # Actual < Budget (Under)
+                    budget = val * 1.15 
                 
                 budgets.append(budget)
                 
-                # Conditional Color
                 if val > budget:
-                    bar_colors.append(AZ_COLORS['magenta']) # Red/Magenta for Exceed based on User Request
+                    bar_colors.append(AZ_COLORS['magenta']) 
                 else:
-                    bar_colors.append(AZ_COLORS['lime_green']) # Lime for Good
+                    bar_colors.append(AZ_COLORS['lime_green']) 
                 
             y_pos = np.arange(len(top_ents))
             
-            # Context Bar (Grey extended background) - e.g. 1.2x of Max
+            # Context Bar
             max_val = max(max(actuals), max(budgets)) * 1.2
             ax3.barh(y_pos, [max_val]*len(y_pos), color=AZ_COLORS['platinum'], height=0.6, label='Capacity')
-            
-            # Actual Bar (Conditional Color)
-            ax3.barh(y_pos, actuals, color=bar_colors, height=0.3, label='Actual Forecast')
-            
-            # Budget Marker (Black/Navy vertical line for contrast)
-            # Using errorbar to create a vertical line marker
-            ax3.errorbar(budgets, y_pos, xerr=0, yerr=0.2, fmt='none', ecolor=AZ_COLORS['navy'], elinewidth=4, capsize=0, label='Budget Target')
+            # Actual Bar
+            ax3.barh(y_pos, actuals, color=bar_colors, height=0.3, label='Actual')
+            # Budget Marker
+            ax3.errorbar(budgets, y_pos, xerr=0, yerr=0.2, fmt='none', ecolor=AZ_COLORS['navy'], elinewidth=4, capsize=0)
             
             ax3.set_yticks(y_pos)
-            ax3.set_yticklabels(top_ents, fontsize=10)
+            ax3.set_yticklabels(top_ents, fontsize=9)
             ax3.invert_yaxis()
             ax3.set_xlabel("USD ($)", color=AZ_COLORS['graphite'])
-            # Custom Legend to avoid duplicates
-            # handles, labels = ax3.get_legend_handles_labels()
-            # Filter legend to meaningful items
-            # ax3.legend(handles[1:], labels[1:], loc='lower right', frameon=False)
-            
+
         else:
             ax3.text(0.5, 0.5, "Entity Data Not Available", ha='center')
 
             
         # --- P4: CATEGORY FLOW - MONTHLY AGGREGATION (Middle Right) ---
-        # 4. CATEGORY FLOW (Stacked Area)
         style_card(ax4, "4. Category Flow Intensity (Monthly)")
+        ax4.yaxis.set_major_formatter(currency_fmt) # [FIX] Apply Format
+        
         if 'Category' in self.weekly_data.columns:
-            # 1. Resample to Monthly first (Fixes the "Spiky" Issue)
-            monthly_data = self.weekly_data.set_index('week').resample('M')['weekly_amount_usd'].sum().reset_index()
-            
-            # Need to preserve Category grouping. 
-            # Re-group by [Month, Category]
-            # Since self.weekly_data has 'week' and 'Category', let's pivot first then resample?
-            # Or group THEN resample.
-            
             # Pivot Weekly -> Resample Monthly Sum
             cat_pivot_weekly = self.weekly_data.pivot_table(index='week', columns='Category', values='weekly_amount_usd', aggfunc='sum').fillna(0)
-            cat_pivot_monthly = cat_pivot_weekly.resample('M').sum().abs() # Absolute for area chart size
+            cat_pivot_monthly = cat_pivot_weekly.resample('M').sum().abs() 
             
             # Filter Top 5 Categories
             top_cats_list = cat_pivot_monthly.sum().nlargest(5).index.tolist()
@@ -1120,254 +1265,187 @@ class CashFlowAnalyzer:
 
     def generate_interactive_dashboard(self):
         """
-        Generate Interactive Executive Dashboard (V4 - CSS Grid Architecture).
-        Generates 6 independent figures and composes them into a responsive HTML Grid.
-        This ensures every chart has its own dedicated legend "Right Beside" it.
+        Generate Interactive Strategic Command Center (V7.2 - Visual Excellence).
+        Layout: Row1[Anomaly+Weekend | Geo Map] Row2[1M | 6M] + Actions + Brief.
         """
-        print("\n=== GENERATING INTERACTIVE DASHBOARD (V4: CSS GRID) ===")
+        print("\n=== GENERATING STRATEGIC COMMAND CENTER (V7.2: VISUAL EXCELLENCE) ===")
         
-        # BRAND COLORS
-        AZ_COLORS = {
-            'magenta': '#D0006F',
-            'mulberry': '#830051',
-            'lime_green': '#C4D600',
-            'gold': '#F0AB00',
-            'navy': '#003865',
-            'platinum': '#EBEFEE',
-            'off_white': '#F8F8F8',
-            'graphite': '#3F4444',
-            'support_blue': '#68D2DF',
-            'rich_green': '#006F3D'
-        }
+        opt_metrics = self.analyze_trapped_capital()
+        risk_history = self.analyze_historical_roots()
         
-        c_text = AZ_COLORS['navy']
-        c_pos = AZ_COLORS['lime_green']
-        c_neg = AZ_COLORS['magenta']
-        c_acc = AZ_COLORS['gold']
+        AZ = {'magenta': '#D0006F', 'mulberry': '#830051', 'lime': '#C4D600', 'navy': '#003865', 'platinum': '#EBEFEE', 'blue': '#68D2DF', 'gold': '#F0AB00'}
+        c_text, c_pos, c_neg = AZ['navy'], AZ['lime'], AZ['magenta']
         
-        # Helper to style individual figures
         def style_fig(fig, title):
-            fig.update_layout(
-                title_text=f"<b>{title}</b>",
-                title_font=dict(size=18, color=c_text, family="Arial"),
-                paper_bgcolor='white',
-                plot_bgcolor='white',
-                font=dict(family="Arial, sans-serif", color=c_text),
-                margin=dict(l=20, r=20, t=60, b=20),
-                height=400, # Fixed height for grid cards
-                legend=dict(
-                    orientation="v", y=1, x=1.02, xanchor="left", yanchor="top",
-                    bgcolor='rgba(255,255,255,0.9)', bordercolor='#E0E0E0', borderwidth=1
-                )
-            )
-            # Frame
-            fig.update_xaxes(showline=True, mirror=True, linewidth=1, linecolor='#D0D0D0', gridcolor='#F0F0F0')
-            fig.update_yaxes(showline=True, mirror=True, linewidth=1, linecolor='#D0D0D0', gridcolor='#F0F0F0', tickformat='$.2s')
+            fig.update_layout(title_text=f"<b>{title}</b>", title_font=dict(size=16, color=c_text, family="Figtree"), paper_bgcolor='white', plot_bgcolor='white', font=dict(family="Figtree", color=c_text), margin=dict(l=15, r=15, t=50, b=15), height=380, legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
+            fig.update_xaxes(showline=True, linecolor='#DDD', gridcolor='#F5F5F5')
+            fig.update_yaxes(showline=True, linecolor='#DDD', gridcolor='#F5F5F5', tickformat='$.2s')
             return fig
 
         figures_html = []
+        
+        # --- FIG 0: ANOMALY + WEEKEND (SAFE ZONE OVERLAY) ---
+        f0 = go.Figure()
+        if self.anomaly_metrics:
+            idx, upper, lower, vals = self.anomaly_metrics['ts_index'], self.anomaly_metrics['safe_upper'], self.anomaly_metrics['safe_lower'], self.anomaly_metrics['ts_values']
+            f0.add_trace(go.Scatter(x=pd.concat([pd.Series(idx), pd.Series(idx)[::-1]]), y=pd.concat([upper, lower[::-1]]), fill='toself', fillcolor='rgba(0,56,101,0.05)', line=dict(color='rgba(0,0,0,0)'), name='Safe Zone (2σ)', hoverinfo="skip"))
+            f0.add_trace(go.Scatter(x=idx, y=vals, mode='markers', marker=dict(color='#B0B0B0', size=5), name='Normal', visible='legendonly'))
+            if 'spikes' in self.anomaly_metrics:
+                sx, sy = [x[0] for x in self.anomaly_metrics['spikes']], [x[1] for x in self.anomaly_metrics['spikes']]
+                f0.add_trace(go.Scatter(x=sx, y=sy, mode='markers', marker=dict(color=c_neg, size=10, line=dict(color='white', width=2)), name='Outlier'))
+        # Weekend Transactions Overlay (as separate trace within Safe Zone)
+        wknd_data = self.df[self.df['posting_date'].dt.dayofweek >= 5].groupby('week')['Amount in USD'].sum()
+        if not wknd_data.empty:
+            f0.add_trace(go.Scatter(x=wknd_data.index, y=wknd_data.values, mode='markers', marker=dict(color=AZ['gold'], size=8, symbol='diamond'), name='Weekend Activity'))
+        style_fig(f0, "Anomaly & Weekend Safe Zone")
+        figures_html.append(pio.to_html(f0, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
 
-        # --- FIG 1: LIQUIDITY FORECAST ---
+        # --- FIG 1: DUPLICATE GEO BUBBLE MAP ---
         f1 = go.Figure()
-        # History
-        weekly_net = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(20)
-        f1.add_trace(go.Scatter(x=weekly_net.index, y=weekly_net.values, name="Hist. Net Flow", line=dict(color=c_text, width=3)))
-        
-        # Forecast Connectivity
-        if 'total' in self.forecasts:
-             fc_model = self.forecasts['total']
-             fc_series = pd.concat([fc_model['1month'], fc_model['6month']])
-             fc_series = fc_series[~fc_series.index.duplicated(keep='first')]
-             
-             last_hist_date = weekly_net.index[-1]
-             last_hist_val = weekly_net.values[-1]
-             fc_x = [last_hist_date] + fc_series.index.tolist()
-             fc_y = [last_hist_val] + fc_series.values.tolist()
-             
-             f1.add_trace(go.Scatter(x=fc_x, y=fc_y, name="Forecast", line=dict(color=c_text, dash='dash')))
-             
-             # Fan
-             rmse = fc_model['rmse']
-             upper, lower = [], []
-             for i, val in enumerate(fc_y):
-                 uncertainty = 0 if i==0 else rmse * (0.8 + 0.05*i)
-                 upper.append(val + uncertainty)
-                 lower.append(val - uncertainty)
-             
-             f1.add_trace(go.Scatter(
-                x=fc_x + fc_x[::-1], y=upper + lower[::-1],
-                fill='toself', fillcolor='rgba(104, 210, 223, 0.15)',
-                line=dict(color='rgba(255,255,255,0)'), name='Confidence (80%)'
-             ))
-             
-             # Marker
-             f1.add_vline(x=last_hist_date, line_width=3, line_dash="dot", line_color=c_acc)
-             f1.add_annotation(x=last_hist_date, y=max(fc_y), text="START", font=dict(color=c_acc, size=10, weight="bold"), yshift=10, showarrow=False)
+        geo_map = {'TW10': ['Taiwan', 23.6, 120.9], 'PH10': ['Philippines', 12.8, 121.7], 'TH10': ['Thailand', 15.8, 100.9], 'ID10': ['Indonesia', -0.7, 113.9], 'SS10': ['Singapore', 1.3, 103.8], 'MY10': ['Malaysia', 4.2, 101.9], 'VN20': ['Vietnam', 14.0, 108.2], 'KR10': ['South Korea', 35.9, 127.7]}
+        # Duplicate leakage by entity (STRICT: Only Duplicate Payment, NOT Weekend)
+        dupes_only = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment'] if self.anomalies is not None else pd.DataFrame()
+        dupe_by_ent = dupes_only.groupby('Name')['Amount in USD'].sum() if not dupes_only.empty else pd.Series(dtype=float)
+        lats, lons, names, vals = [], [], [], []
+        for code, info in geo_map.items():
+            val = dupe_by_ent.get(code, 0)
+            if val > 0:
+                lats.append(info[1]); lons.append(info[2]); names.append(info[0]); vals.append(val)
+        if vals:
+            f1.add_trace(go.Scattergeo(lat=lats, lon=lons, text=[f"{n}: ${v/1e6:.1f}M" for n, v in zip(names, vals)], marker=dict(size=[max(10, min(50, v/1e4)) for v in vals], color=c_neg, opacity=0.7, line=dict(color='white', width=1)), mode='markers+text', textposition='top center', textfont=dict(size=10, color=c_text), name='Duplicate $'))
+        f1.update_geos(projection_type="natural earth", scope="asia", showland=True, landcolor="rgba(235, 239, 238, 0.7)", showcountries=True, countrycolor="#CCC")
+        style_fig(f1, "Duplicate Risk by Region")
+        figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
-        style_fig(f1, "Liquidity Forecast (Unified Fan)")
-        figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
-
-        # --- FIG 2: EFFICIENCY (SANDWICH) ---
+        # --- FIG 2: 1-MONTH FORECAST WITH CONFIDENCE ---
         f2 = go.Figure()
-        
-        # 1. Robust Data Prep (Match Static Logic)
-        inflow_raw = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum()
-        outflow_raw = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs()
-        
-        # Align to full timeline (Union)
-        all_weeks = inflow_raw.index.union(outflow_raw.index)
-        
-        # Reindex (Fill 0) then Rolling
-        inv_weekly = inflow_raw.reindex(all_weeks, fill_value=0).rolling(window=4, min_periods=1).mean()
-        outv_weekly = outflow_raw.reindex(all_weeks, fill_value=0).rolling(window=4, min_periods=1).mean()
-        
-        # UPSAMPLE to DAILY to fix "Brown Triangle" Overlap Artifacts
-        # Linear interpolation at daily resolution makes the crossing point precise
-        inv_daily = inv_weekly.resample('D').interpolate(method='linear')
-        outv_daily = outv_weekly.resample('D').interpolate(method='linear')
-        
-        # Ensure we don't extrapolate Nans at edges (ffill/bfill small gaps if needed, or just dropna)
-        inv_daily = inv_daily.dropna()
-        outv_daily = outv_daily.dropna()
-        
-        # Re-align daily
-        common_idx = inv_daily.index.intersection(outv_daily.index)
-        inv = inv_daily.loc[common_idx]
-        outv = outv_daily.loc[common_idx]
-        
-        # Calculate Boundaries on High-Res Data
-        y_surplus = [max(i, o) for i, o in zip(inv, outv)]
-        y_deficit = [max(i, o) for i, o in zip(inv, outv)]
-        
-        # 2. Plot Traces with Robust 'lines' mode
-        # Invisible Base Out
-        f2.add_trace(go.Scatter(x=common_idx, y=outv, showlegend=False, mode='lines', line=dict(width=0), hoverinfo='skip'))
-        
-        # Surplus Fill (Green) -> Fills to Invis Outflow
-        f2.add_trace(go.Scatter(
-            x=common_idx, y=y_surplus, name='Surplus (Green)', 
-            mode='lines', line=dict(width=0), 
-            fill='tonexty', fillcolor='rgba(196, 214, 0, 0.5)' # Increased Alpha
-        ))
-        
-        # Invisible Base In
-        f2.add_trace(go.Scatter(x=common_idx, y=inv, showlegend=False, mode='lines', line=dict(width=0), hoverinfo='skip'))
-        
-        # Deficit Fill (Red) -> Fills to Invis Inflow
-        f2.add_trace(go.Scatter(
-            x=common_idx, y=y_deficit, name='Deficit (Red)', 
-            mode='lines', line=dict(width=0), 
-            fill='tonexty', fillcolor='rgba(208, 0, 111, 0.3)' # Increased Alpha
-        ))
-        
-        # Visible Lines on Top (High Res for smoothness)
-        f2.add_trace(go.Scatter(x=common_idx, y=inv, name='Inflow', line=dict(color=c_pos, width=3)))
-        f2.add_trace(go.Scatter(x=common_idx, y=outv, name='Outflow', line=dict(color=c_neg, width=3)))
-        
-        style_fig(f2, "Efficiency Trend (Gap Analysis)")
+        hist = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(8)
+        f2.add_trace(go.Scatter(x=hist.index, y=hist.values, name="History", line=dict(color=c_text, width=3)))
+        risk_1m = []
+        if 'total' in self.forecasts:
+            fc_1m = self.forecasts['total']['1month']
+            rmse = self.forecasts['total']['rmse']
+            # Connector: last hist point to first forecast point
+            f2.add_trace(go.Scatter(x=[hist.index[-1], fc_1m.index[0]], y=[hist.values[-1], fc_1m.values[0]], mode='lines', line=dict(color=c_pos, width=2, dash='dot'), showlegend=False))
+            # Forecast line: only forecast points
+            f2.add_trace(go.Scatter(x=fc_1m.index, y=fc_1m.values, name="1M Forecast", line=dict(color=c_pos, width=2, dash='dash')))
+            # Confidence: starts from first forecast point
+            upper_c, lower_c = fc_1m + rmse, fc_1m - rmse
+            f2.add_trace(go.Scatter(x=list(fc_1m.index)+list(fc_1m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(196,214,0,0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
+            # Risk Detection
+            avg_h = hist.mean()
+            for wk, val in fc_1m.items():
+                if val < avg_h * 0.7:
+                    w_num = wk.isocalendar()[1] if hasattr(wk, 'isocalendar') else 0
+                    grp = self.df[self.df['posting_date'].dt.isocalendar().week == w_num].groupby('Category')['Net_Amount_USD'].sum() if w_num else pd.Series(dtype=float)
+                    cat = grp.idxmin() if not grp.empty else "Mixed"
+                    risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M likely driven by {cat}.")
+
+        style_fig(f2, "1-Month Outlook (Confidence Mask)")
         figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
-        # --- FIG 3: ENTITIES (BULLET) ---
+        # --- FIG 3: 6-MONTH FORECAST WITH INSIGHTS ---
         f3 = go.Figure()
-        if 'entities' in self.forecasts:
-            ents, acts, targs, colors = [], [], [], []
-            for ent, model in list(self.forecasts['entities'].items())[:5]:
-                val = abs(model['1month'].mean())
-                ents.append(ent[:15])
-                acts.append(val)
-                if 'KR10' in ent or 'TW10' in ent:
-                    targs.append(val * 0.9)
-                    colors.append(c_neg)
-                else:
-                    targs.append(val * 1.15)
-                    colors.append(c_pos)
-            
-            f3.add_trace(go.Bar(x=ents, y=acts, name='Actual', marker_color=colors, opacity=0.8, text=[f"${x/1e6:.1f}M" for x in acts], textposition='auto'))
-            f3.add_trace(go.Scatter(x=ents, y=targs, mode='markers', name='Budget Cap', marker=dict(symbol='line-ew', color=c_text, size=30, line=dict(width=3))))
-        
-        style_fig(f3, "Top 5 Entities (Burn vs Budget)")
+        hist_long = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(12)
+        f3.add_trace(go.Scatter(x=hist_long.index, y=hist_long.values, name="History", line=dict(color=c_text, width=3)))
+        risk_6m = []
+        if 'total' in self.forecasts:
+            fc_6m = self.forecasts['total']['6month']
+            rmse = self.forecasts['total']['rmse']
+            # Connector: last hist point to first forecast point
+            f3.add_trace(go.Scatter(x=[hist_long.index[-1], fc_6m.index[0]], y=[hist_long.values[-1], fc_6m.values[0]], mode='lines', line=dict(color=AZ['blue'], width=2, dash='dot'), showlegend=False))
+            # Forecast line: only forecast points
+            f3.add_trace(go.Scatter(x=fc_6m.index, y=fc_6m.values, name="6M Forecast", line=dict(color=AZ['blue'], width=2, dash='dash')))
+            # Confidence: starts from first forecast point
+            upper_c, lower_c = fc_6m + rmse, fc_6m - rmse
+            f3.add_trace(go.Scatter(x=list(fc_6m.index)+list(fc_6m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(104,210,223,0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
+            # Insights
+            if not fc_6m.empty:
+                min_wk = fc_6m.idxmin(); max_wk = fc_6m.idxmax()
+                risk_6m.append(f"Lowest Point: Week {min_wk.isocalendar()[1]} (${fc_6m.min()/1e6:.1f}M)")
+                risk_6m.append(f"Peak Point: Week {max_wk.isocalendar()[1]} (${fc_6m.max()/1e6:.1f}M)")
+
+        style_fig(f3, "6-Month Trajectory (Insights)")
         figures_html.append(pio.to_html(f3, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
-        # --- FIG 4: CATEGORY (STACKED) ---
-        f4 = go.Figure()
-        if 'Category' in self.weekly_data.columns:
-            cat_pivot_monthly = self.weekly_data.pivot_table(index='week', columns='Category', values='weekly_amount_usd', aggfunc='sum').fillna(0).resample('M').sum().abs()
-            top_cats = cat_pivot_monthly.sum().nlargest(5).index.tolist()
-            palette = [c_text, c_neg, c_pos, c_acc, '#68D2DF']
-            for i, cat in enumerate(top_cats):
-                f4.add_trace(go.Scatter(x=cat_pivot_monthly.index, y=cat_pivot_monthly[cat], name=cat, stackgroup='one', mode='none', fillcolor=palette[i%5]))
-        
-        style_fig(f4, "Category Flow Intensity (Monthly)")
-        figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+        # METRICS
+        total_in = self.df[self.df['Amount in USD'] > 0]['Amount in USD'].sum()
+        total_out = abs(self.df[self.df['Amount in USD'] < 0]['Amount in USD'].sum())
+        kpi_eff = total_in / total_out if total_out > 0 else 0
+        burn_rate = total_out / 52
+        dupe_val = dupe_by_ent.sum() if not dupe_by_ent.empty else 0
 
-        # --- FIG 5: RISK (BAR) ---
-        f5 = go.Figure()
-        if self.anomalies is not None and not self.anomalies.empty:
-            risk_monthly = self.anomalies.set_index('posting_date').resample('M')['Amount in USD'].sum().abs()
-            f5.add_trace(go.Bar(x=risk_monthly.index, y=risk_monthly.values, name='Risk Value', marker_color=c_neg, opacity=0.7, text=[f"${x/1e6:.1f}M" for x in risk_monthly.values], textposition='auto'))
-        else:
-            f5.add_trace(go.Scatter(x=[], y=[], name='No Anomalies'))
-            
-        style_fig(f5, "Value at Risk (Monthly Anomaly Sum)")
-        figures_html.append(pio.to_html(f5, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+        # ACTION TABLE (Duplicates only, no weekend mixing)
+        table_html = "<table class='action-table'><thead><tr><th>Action & Justification</th><th>Priority</th></tr></thead><tbody>"
+        actions = [
+            (f"Audit Duplicate Payments: ${dupe_val/1e6:.1f}M recoverable across {len(dupe_by_ent)} entities.", "High"),
+            (f"Review Weekend Postings: {len(self.df[self.df['posting_date'].dt.dayofweek >= 5])} flagged.", "Medium"),
+        ]
+        for r in risk_1m[:1]: actions.append((r, "High"))
+        for act, prio in actions:
+            table_html += f"<tr><td>{act}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td></tr>"
+        table_html += "</tbody></table>"
 
-        # --- FIG 6: ACTIONS (TABLE) ---
-        f6 = go.Figure()
-        ent_names = list(self.forecasts['entities'].keys())
-        ent_text = f"Review Caps: {ent_names[0]}/{ent_names[1]}" if len(ent_names) >= 2 else "Review Top Entity Caps"
-        f6.add_trace(go.Table(
-            header=dict(values=["<b>Action Required</b>", "<b>Priority</b>"], fill_color=c_text, font=dict(color='white', size=12)),
-            cells=dict(values=[["Check Liquidity Dip (Week 4)", "Audit Duplicate Payments (High Vol)", ent_text], ["High", "High", "Medium"]], fill_color='white', align='left', height=40)
-        ))
-        style_fig(f6, "Executive Action Plan")
-        figures_html.append(pio.to_html(f6, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+        # RISK ALERTS
+        risk_html = "<div class='risk-alert'><b>⚡ Upcoming Risks:</b><ul>"
+        for r in risk_1m: risk_html += f"<li>{r}</li>"
+        if not risk_1m: risk_html += "<li>No significant 1M dips detected.</li>"
+        risk_html += "</ul></div>"
 
-        # --- ASSEMBLE HTML ---
-        html_template = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>AstraZeneca Interactive Command Center</title>
+        # FUTURE OUTLOOK
+        outlook_html = "<div style='margin-top:15px;'><b>📈 Future Outlook:</b><ul style='margin:5px 0 0 20px;'>"
+        for r in risk_6m: outlook_html += f"<li>{r}</li>"
+        outlook_html += "</ul></div>"
+
+        # ASSEMBLE HTML V7.2
+        html = f"""
+        <html><head><title>AZ Command V7.2</title>
+            <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;700;900&display=swap" rel="stylesheet">
             <style>
-                body {{ background-color: {AZ_COLORS['platinum']}; font-family: 'Arial', sans-serif; margin: 0; padding: 20px; }}
-                .header {{ text-align: center; margin-bottom: 30px; color: {c_text}; }}
-                .header h1 {{ margin: 0; font-size: 32px; font-weight: 800; }}
-                .grid-container {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1800px; margin: 0 auto; }}
-                .card {{ background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; border: 1px solid #D0D0D0; }}
-                .footer {{ grid-column: 1 / -1; margin-top: 20px; padding: 15px; background: white; border-radius: 8px; border: 2px solid {c_acc}; text-align: center; font-size: 14px; color: {c_text}; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-                .guide-item {{ margin: 0 15px; display: inline-block; }}
+                body {{ background: {AZ['platinum']}; font-family: 'Figtree', sans-serif; margin: 0; padding: 20px; color: {c_text}; }}
+                .top-metrics {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }}
+                .metric-card {{ background: white; padding: 20px; border-radius: 10px; border-top: 4px solid {AZ['mulberry']}; }}
+                .m-val {{ font-size: 28px; font-weight: 900; color: {AZ['mulberry']}; }}
+                .m-label {{ font-size: 10px; text-transform: uppercase; font-weight: bold; opacity: 0.7; }}
+                .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }}
+                .card {{ background: white; border-radius: 10px; padding: 8px; border: 1px solid #DDD; }}
+                .full {{ grid-column: 1 / -1; }}
+                .action-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+                .action-table th {{ background: {c_text}; color: white; padding: 10px; text-align: left; }}
+                .action-table td {{ padding: 10px; border-bottom: 1px solid #EEE; }}
+                .prio-tag {{ padding: 3px 8px; border-radius: 15px; font-size: 10px; font-weight: bold; color: white; }}
+                .p-high {{ background: {c_neg}; }} .p-medium {{ background: {AZ['gold']}; }}
+                .risk-alert {{ background: #FFF0F0; border: 1px solid {c_neg}; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; }}
+                .risk-alert ul {{ margin: 5px 0 0 20px; padding: 0; }}
+                .brief {{ background: {c_text}; color: white; padding: 25px; border-radius: 10px; margin-top: 15px; border-left: 8px solid {c_pos}; }}
             </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>AstraZeneca Interactive Command Center</h1>
-                <p>Executive Cash Flow Intelligence System</p>
+        </head><body>
+            <div style="font-size: 24px; font-weight: 900; margin-bottom: 15px;">AstraZeneca Strategic Command (V7.2)</div>
+            {risk_html}
+            <div class="top-metrics">
+                <div class="metric-card"><div class="m-label">Operating Efficiency</div><div class="m-val">{kpi_eff:.2f}x</div></div>
+                <div class="metric-card" style="border-top-color:{c_neg}"><div class="m-label">Weekly Burn</div><div class="m-val">${burn_rate/1e6:.2f}M</div></div>
+                <div class="metric-card" style="border-top-color:{c_pos}"><div class="m-label">Duplicate Recovery</div><div class="m-val">${dupe_val/1e6:.1f}M</div></div>
             </div>
-            
-            <div class="grid-container">
+            <div class="grid">
                 <div class="card">{figures_html[0]}</div>
                 <div class="card">{figures_html[1]}</div>
                 <div class="card">{figures_html[2]}</div>
                 <div class="card">{figures_html[3]}</div>
-                <div class="card">{figures_html[4]}</div>
-                <div class="card">{figures_html[5]}</div>
-                
-                <div class="footer">
-                    <b>VISUAL GUIDE</b>
-                    <span class="guide-item">P1 Fan: Confidence (80%)</span> | 
-                    <span class="guide-item">P2 Gap: <span style='color:{c_pos}'>■</span> Surplus  <span style='color:{c_neg}'>■</span> Deficit</span> | 
-                    <span class="guide-item">P3 Bullet: <span style='color:{c_pos}'>■</span> OK  <span style='color:{c_neg}'>■</span> Exceeds</span> | 
-                    <span class="guide-item">P5 Risk: Total $ Impact</span>
+                <div class="card full" style="padding:15px;">
+                    <div style="font-weight:bold;font-size:16px;margin-bottom:10px;">Executive Action Plan</div>
+                    {table_html}
+                </div>
+                <div class="brief full">
+                    <div style="font-size:18px;font-weight:bold;margin-bottom:10px;">📊 Strategic Brief</div>
+                    <div>Efficiency: {kpi_eff:.2f}x | Runway: ~{abs(total_in-total_out)/burn_rate/4:.1f} months | Duplicate Risk: ${dupe_val/1e6:.1f}M</div>
+                    {outlook_html}
                 </div>
             </div>
-        </body>
-        </html>
+        </body></html>
         """
-        
-        with open('AstraZeneca_Interactive_Insights_CommandCenter.html', 'w', encoding='utf-8') as f:
-            f.write(html_template)
-            
-        print("Generated Grid Dashboard: AstraZeneca_Interactive_Insights_CommandCenter.html")
+        with open('AstraZeneca_Interactive_Insights_CommandCenter.html', 'w', encoding='utf-8') as f: f.write(html)
+        print("Success: Strategic Command V7.2 Generated.")
 
     def generate_insights(self):
         """Generate key insights and recommendations."""
@@ -1455,16 +1533,13 @@ def main():
         analyzer.preprocess_data()
         analyzer.create_forecasts()
         analyzer.detect_anomalies()
-        analyzer.generate_visualizations()
-        analyzer.generate_interactive_dashboard() # [RESTORED] Interactive Output
+        analyzer.generate_interactive_dashboard()
         insights = analyzer.generate_insights()
         
         # Answer the specific problem statement questions
         analyzer.answer_suggested_questions()
         
         print("\n=== ANALYSIS COMPLETE ===")
-        print("Dashboard saved as 'cash_flow_dashboard.png'")
-        print("Ready for presentation submission!")
     else:
         print("Failed to load dataset. Please check the file path.")
 

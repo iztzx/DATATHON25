@@ -115,6 +115,9 @@ def clean_and_export_data():
         
         # B. Potential Duplicates (Same Amount, Date, Category - regardless of Docs)
         subset_cols = ['Amount in USD', 'posting_date', 'Category']
+        # NOTE: We intentionally PRESERVE duplicates here so the Anomaly Detection module
+        # in the main analysis can flag them for review.
+        print("  • NOTE: Duplicates are PRESERVED for anomaly detection.")
         df['is_potential_duplicate'] = df.duplicated(subset=subset_cols, keep=False)
         
         # C. CURRENCY CHECK (The "Korea Check")
