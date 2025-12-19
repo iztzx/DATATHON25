@@ -200,41 +200,43 @@ class CashFlowAnalyzer:
         self.df['week'] = self.df['posting_date'].dt.to_period('W').dt.start_time
         self.df['month'] = self.df['posting_date'].dt.to_period('M').dt.start_time
         
-        # Create cash flow direction (inflow/outflow)
+        # Create cash flow direction (inflow/outflow) - keep for reference
         if 'Amount in doc. curr.' in self.df.columns:
             self.df['cash_flow_direction'] = np.where(
                 self.df['Amount in doc. curr.'] > 0, 'Inflow', 'Outflow'
             )
         
-        # Aggregate to weekly level
+        # Create Net_Amount_USD (signed) for proper aggregation
+        # Uses doc currency sign as source of truth
+        if 'Amount in doc. curr.' in self.df.columns and 'Amount in USD' in self.df.columns:
+            self.df['Net_Amount_USD'] = np.where(
+                self.df['Amount in doc. curr.'] < 0,
+                -1 * self.df['Amount in USD'].abs(),
+                self.df['Amount in USD'].abs()
+            )
+        
+        # Aggregate to weekly level (NO cash_flow_direction split - use signed Net_Amount_USD)
         group_cols = ['week']
         if 'Category' in self.df.columns:
             group_cols.append('Category')
         if 'Activity' in self.df.columns:
-            group_cols.append('Activity') # Group by Activity too
-            
-        group_cols.append('cash_flow_direction')
+            group_cols.append('Activity')
         
-        agg_dict = {}
-        if 'Amount in doc. curr.' in self.df.columns:
-            agg_dict['Amount in doc. curr.'] = 'sum'
-        if 'Amount in USD' in self.df.columns:
-            agg_dict['Amount in USD'] = 'sum'
+        agg_dict = {'Net_Amount_USD': 'sum'}
         if 'DocumentNo' in self.df.columns:
             agg_dict['DocumentNo'] = 'count'
         
         self.weekly_data = self.df.groupby(group_cols).agg(agg_dict).reset_index()
         
         # Rename columns for clarity
-        if 'Amount in doc. curr.' in agg_dict:
-            self.weekly_data = self.weekly_data.rename(columns={'Amount in doc. curr.': 'weekly_amount'})
-        if 'Amount in USD' in agg_dict:
-            self.weekly_data = self.weekly_data.rename(columns={'Amount in USD': 'weekly_amount_usd'})
-        if 'DocumentNo' in agg_dict:
-            self.weekly_data = self.weekly_data.rename(columns={'DocumentNo': 'transaction_count'})
+        self.weekly_data = self.weekly_data.rename(columns={
+            'Net_Amount_USD': 'weekly_amount_usd',
+            'DocumentNo': 'transaction_count'
+        })
         
         # Sort by week
         self.weekly_data = self.weekly_data.sort_values('week')
+
         
         # --- EXPORT CLEANED DATA ---
         export_path = 'AstraZeneca_Cleaned_Processed_Data.csv'
@@ -1297,25 +1299,48 @@ class CashFlowAnalyzer:
         wknd_data = self.df[self.df['posting_date'].dt.dayofweek >= 5].groupby('week')['Amount in USD'].sum()
         if not wknd_data.empty:
             f0.add_trace(go.Scatter(x=wknd_data.index, y=wknd_data.values, mode='markers', marker=dict(color=AZ['gold'], size=8, symbol='diamond'), name='Weekend Activity'))
-        style_fig(f0, "Anomaly & Weekend Safe Zone")
+        style_fig(f0, "Anomaly Check: Weekend & Safe Zone")
         figures_html.append(pio.to_html(f0, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
 
-        # --- FIG 1: DUPLICATE GEO BUBBLE MAP ---
+        # --- FIG 1: ENTITY GEO BUBBLE MAP (Net Flow + Duplicates) ---
         f1 = go.Figure()
         geo_map = {'TW10': ['Taiwan', 23.6, 120.9], 'PH10': ['Philippines', 12.8, 121.7], 'TH10': ['Thailand', 15.8, 100.9], 'ID10': ['Indonesia', -0.7, 113.9], 'SS10': ['Singapore', 1.3, 103.8], 'MY10': ['Malaysia', 4.2, 101.9], 'VN20': ['Vietnam', 14.0, 108.2], 'KR10': ['South Korea', 35.9, 127.7]}
-        # Duplicate leakage by entity (STRICT: Only Duplicate Payment, NOT Weekend)
+        
+        # Net Flow by Entity
+        net_by_ent = self.df.groupby('Name')['Net_Amount_USD'].sum() if 'Net_Amount_USD' in self.df.columns else pd.Series(dtype=float)
+        
+        # Duplicate leakage by entity
         dupes_only = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment'] if self.anomalies is not None else pd.DataFrame()
         dupe_by_ent = dupes_only.groupby('Name')['Amount in USD'].sum() if not dupes_only.empty else pd.Series(dtype=float)
-        lats, lons, names, vals = [], [], [], []
+        
+        # Build bubble data
         for code, info in geo_map.items():
-            val = dupe_by_ent.get(code, 0)
-            if val > 0:
-                lats.append(info[1]); lons.append(info[2]); names.append(info[0]); vals.append(val)
-        if vals:
-            f1.add_trace(go.Scattergeo(lat=lats, lon=lons, text=[f"{n}: ${v/1e6:.1f}M" for n, v in zip(names, vals)], marker=dict(size=[max(10, min(50, v/1e4)) for v in vals], color=c_neg, opacity=0.7, line=dict(color='white', width=1)), mode='markers+text', textposition='top center', textfont=dict(size=10, color=c_text), name='Duplicate $'))
+            lat, lon, name = info[1], info[2], info[0]
+            net_val = net_by_ent.get(code, 0)
+            dupe_val = dupe_by_ent.get(code, 0)
+            
+            # Net Flow Bubble (Green = Profit, Magenta = Deficit)
+            if net_val != 0:
+                color = c_pos if net_val > 0 else c_neg
+                label = f"{name}: ${net_val/1e6:+.1f}M"
+                size = max(12, min(50, abs(net_val)/1e5))
+                f1.add_trace(go.Scattergeo(lat=[lat], lon=[lon], text=[label], marker=dict(size=size, color=color, opacity=0.7, line=dict(color='white', width=1)), mode='markers+text', textposition='top center', textfont=dict(size=9, color=c_text), name=f'{name} Net', showlegend=False))
+            
+            # Duplicate Bubble (Gold/Yellow - slightly offset for visibility)
+            if dupe_val > 0:
+                label = f"⚠ ${dupe_val/1e6:.1f}M"
+                size = max(8, min(30, dupe_val/1e4))
+                f1.add_trace(go.Scattergeo(lat=[lat-0.5], lon=[lon+1], text=[label], marker=dict(size=size, color=AZ['gold'], opacity=0.9, symbol='diamond', line=dict(color='white', width=1)), mode='markers+text', textposition='bottom center', textfont=dict(size=8, color=AZ['gold']), name=f'{name} Dup', showlegend=False))
+        
+        # Legend entries
+        f1.add_trace(go.Scattergeo(lat=[None], lon=[None], marker=dict(size=10, color=c_pos), name='Profit (Net+)'))
+        f1.add_trace(go.Scattergeo(lat=[None], lon=[None], marker=dict(size=10, color=c_neg), name='Deficit (Net-)'))
+        f1.add_trace(go.Scattergeo(lat=[None], lon=[None], marker=dict(size=10, color=AZ['gold'], symbol='diamond'), name='Duplicates'))
+        
         f1.update_geos(projection_type="natural earth", scope="asia", showland=True, landcolor="rgba(235, 239, 238, 0.7)", showcountries=True, countrycolor="#CCC")
-        style_fig(f1, "Duplicate Risk by Region")
+        style_fig(f1, "Entity Cash Flow Map: Net + Duplicates")
         figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
 
         # --- FIG 2: 1-MONTH FORECAST WITH CONFIDENCE ---
         f2 = go.Figure()
@@ -1346,7 +1371,7 @@ class CashFlowAnalyzer:
             if dip_weeks_1m:
                 f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Dip Alert'))
 
-        style_fig(f2, "1-Month Outlook (Confidence Mask)")
+        style_fig(f2, "1-Month Outlook: Risk Detection")
         figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
 
@@ -1371,7 +1396,7 @@ class CashFlowAnalyzer:
                 risk_6m.append(f"Lowest Point: Week {min_wk.isocalendar()[1]} (${fc_6m.min()/1e6:.1f}M)")
                 risk_6m.append(f"Peak Point: Week {max_wk.isocalendar()[1]} (${fc_6m.max()/1e6:.1f}M)")
 
-        style_fig(f3, "6-Month Trajectory (Insights)")
+        style_fig(f3, "6-Month Trajectory: Insights")
         figures_html.append(pio.to_html(f3, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
         # --- FIG 4: CATEGORY ANALYSIS (Inflow/Outflow Breakdown) ---
@@ -1393,16 +1418,30 @@ class CashFlowAnalyzer:
         burn_rate = total_out / 52
         dupe_val = dupe_by_ent.sum() if not dupe_by_ent.empty else 0
 
-        # ACTION TABLE (Clickable - links to charts)
-        table_html = "<table class='action-table'><thead><tr><th>Action & Justification</th><th>Priority</th><th></th></tr></thead><tbody>"
+        # ACTION TABLE (Issue | Action | Priority - Clickable)
+        # Round Number Risk: Large exact amounts suggest manual entry
+        round_mask = (self.df['Amount in USD'].abs() >= 100000) & (self.df['Amount in USD'].abs() % 1000 == 0)
+        round_cnt = round_mask.sum()
+        round_val = self.df.loc[round_mask, 'Amount in USD'].abs().sum()
+        
+        table_html = "<table class='action-table'><thead><tr><th>Issue</th><th>Action (Based on Past Data)</th><th>Priority</th><th></th></tr></thead><tbody>"
         actions = [
-            (f"Audit Duplicate Payments: ${dupe_val/1e6:.1f}M recoverable across {len(dupe_by_ent)} entities.", "High", "c1"),
-            (f"Review Weekend Postings: {len(self.df[self.df['posting_date'].dt.dayofweek >= 5])} flagged.", "Medium", "c0"),
+            (f"Duplicates: ${dupe_val/1e6:.1f}M ({len(dupe_by_ent)} entities)", "Audit vendor invoices", "High", "c1"),
+            (f"Round Numbers: ${round_val/1e6:.1f}M ({round_cnt} txns)", "Verify supporting docs", "Medium", "c0"),
         ]
-        for r in risk_1m[:1]: actions.append((r, "High", "c2"))
-        for act, prio, target in actions:
-            table_html += f"<tr class='action-row' onclick=\"focusChart('{target}')\"><td>{act}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td><td>→</td></tr>"
+
+        # Add ALL forecast dips with RCA
+        for r in risk_1m:
+            # Parse the dip info: "Week X: Dip to $YM (Category)"
+            parts = r.split('(')
+            week_info = parts[0].strip() if parts else r
+            cat_driver = parts[1].replace(')', '') if len(parts) > 1 else "Mixed"
+            actions.append((week_info, f"Check {cat_driver} trends", "High", "c2"))
+        for issue, action, prio, target in actions:
+            table_html += f"<tr class='action-row' onclick=\"focusChart('{target}')\"><td>{issue}</td><td>{action}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td><td>→</td></tr>"
         table_html += "</tbody></table>"
+
+
 
 
         # RISK ALERTS
