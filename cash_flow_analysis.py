@@ -808,13 +808,24 @@ class CashFlowAnalyzer:
             # Only tag if not already a Duplicate
             self.df.loc[is_round & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Round Number Risk'
             
-        # 4. Weekend Activity
+        # 4. Weekend Activity (LOWEST PRIORITY - only if no other anomaly)
+        # But: If weekend is ALSO a volume outlier, label as Outlier (higher priority)
         # ---------------------------------------------
         print("  • Scanning for Weekend Transactions...")
         if 'posting_date' in self.df.columns:
-            # Sat=5, Sun=6
             is_weekend = self.df['posting_date'].dt.dayofweek >= 5
+            
+            # Check if weekend week is also a volume outlier
+            if self.anomaly_metrics and 'spikes' in self.anomaly_metrics:
+                outlier_weeks = [s[0] for s in self.anomaly_metrics['spikes']]
+                # Mark weekend transactions in outlier weeks as Outlier (not Weekend)
+                for wk in outlier_weeks:
+                    mask_week = self.df['week'] == wk
+                    self.df.loc[is_weekend & mask_week & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Outlier (Weekend)'
+            
+            # Remaining weekends without other anomaly -> Weekend Activity
             self.df.loc[is_weekend & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Weekend Activity'
+
 
         # Consolidate Risks
         self.anomalies = self.df[self.df['anomaly_type'].notna()].copy()
