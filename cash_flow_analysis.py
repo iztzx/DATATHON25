@@ -311,7 +311,7 @@ class CashFlowAnalyzer:
         last_trend = trend
         
         # 1-month forecast (4 weeks)
-        forecast_1month_dates = pd.date_range(start=last_date + timedelta(weeks=1), periods=4, freq='W')
+        forecast_1month_dates = pd.date_range(start=last_date + timedelta(days=1), periods=4, freq='W-MON')  # Start day after, align to Monday
         forecast_1month_values = []
         historical_volatility = series.std() if len(series) > 1 else 0
         
@@ -323,7 +323,7 @@ class CashFlowAnalyzer:
         forecast_1month = pd.Series(forecast_1month_values, index=forecast_1month_dates)
         
         # 6-month forecast (24 weeks)
-        forecast_6month_dates = pd.date_range(start=last_date + timedelta(weeks=1), periods=24, freq='W')
+        forecast_6month_dates = pd.date_range(start=last_date + timedelta(days=1), periods=24, freq='W-MON')  # Start day after, align to Monday
         forecast_6month_values = []
         damping_factor = 0.95
         
@@ -1319,7 +1319,7 @@ class CashFlowAnalyzer:
 
         # --- FIG 2: 1-MONTH FORECAST WITH CONFIDENCE ---
         f2 = go.Figure()
-        hist = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()  # All historical data
+        hist = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(12)  # 12 weeks trailing for 1M view
         f2.add_trace(go.Scatter(x=hist.index, y=hist.values, name="History", line=dict(color=c_text, width=3)))
         risk_1m = []
         dip_weeks_1m = []
