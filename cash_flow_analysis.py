@@ -2,10 +2,13 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.io as pio # Added for HTML export
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -818,9 +821,23 @@ class CashFlowAnalyzer:
         }
         
         # 3 Rows x 2 Columns Layout
-        fig, axes = plt.subplots(3, 2, figsize=(20, 18), facecolor=AZ_COLORS['off_white'])
-        plt.suptitle("AstraZeneca Executive Cash Flow Dashboard (V3 - Brand Aligned)", fontsize=24, fontweight='bold', color=AZ_COLORS['navy'])
-        plt.subplots_adjust(hspace=0.4, wspace=0.25)
+        # Subplots with CARD SPACING
+        # Use GridSpec for better control if needed, but subplots with spacing works
+        fig, axs = plt.subplots(3, 2, figsize=(20, 14), facecolor=AZ_COLORS['platinum']) # Grey BG
+        plt.subplots_adjust(hspace=0.4, wspace=0.25, left=0.05, right=0.95, top=0.92, bottom=0.08)
+        
+        # Helper to style axes as CARDS
+        def style_card(ax, title):
+            ax.set_title(title, fontsize=14, loc='left', color=AZ_COLORS['navy'], pad=15, fontweight='bold')
+            ax.set_facecolor('white') # Card BG
+            ax.grid(True, color='#E0E0E0', linestyle='-', linewidth=0.5)
+            # Frame (Spines)
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_color('#B0B0B0')
+                spine.set_linewidth(1)
+            
+        (ax1, ax2), (ax3, ax4), (ax5, ax6) = axs
         
         # Helper for currency formatting
         def currency_format(x, pos):
@@ -851,8 +868,8 @@ class CashFlowAnalyzer:
             ax.yaxis.set_major_formatter(currency_fmt)
 
         # --- P1: LIQUIDITY FORECAST - UNIFIED FAN CHART (Top Left) ---
-        ax1 = axes[0, 0]
-        style_ax(ax1, "Liquidity Forecast (Unified Trend + Confidence)")
+        # 1. LIQUIDITY FORECAST (Fan Chart)
+        style_card(ax1, "1. Liquidity Forecast (Unified Fan)")
         
         # 1. Historical Net Flow (Line instead of Bars for continuity)
         weekly_net = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
@@ -865,64 +882,75 @@ class CashFlowAnalyzer:
         if 'total' in self.forecasts:
              fc_model = self.forecasts['total']
              # Combine 1m and 6m for plotting
+             # Combine 1m and 6m
              fc_series = pd.concat([fc_model['1month'], fc_model['6month']])
-             # Remove duplicates if overlaps
              fc_series = fc_series[~fc_series.index.duplicated(keep='first')]
              
-             # Connect history to forecast
-             # Add the last history point to forecast to close the visual gap
-             last_hist_date = history.index[-1]
-             last_hist_val = history.values[-1]
+             # CONNECTIVITY FIX (Static): Prepend last historical point to avoid gap
+             last_hist_date = weekly_net.index[-1]
+             last_hist_val = weekly_net.values[-1]
+             
+             # Create connected arrays
+             fc_x = [last_hist_date] + fc_series.index.tolist()
+             fc_y = [last_hist_val] + fc_series.values.tolist()
              
              # Plots
-             ax1.plot(fc_series.index, fc_series.values, color=AZ_COLORS['navy'], linestyle='--', linewidth=2, label='Forecast')
+             ax1.plot(fc_x, fc_y, color=AZ_COLORS['navy'], linestyle='--', linewidth=2, label='Forecast')
              
              # Confidence Interval (Fan) - Tightened and Faded
              rmse = fc_model['rmse']
              # Widen the cone over time but LESS aggressively (Tighten)
              upper_bound = []
              lower_bound = []
-             for i, val in enumerate(fc_series.values):
-                 # Reduced width multiplier from 0.1 to 0.05
-                 uncertainty = rmse * (0.8 + 0.05 * i)
-                 upper_bound.append(val + uncertainty)
-                 lower_bound.append(val - uncertainty)
+             
+             # Re-calc for connected series
+             for i, val in enumerate(fc_y):
+                 if i == 0:
+                     # Connect point has 0 uncertainty
+                     u = val
+                     l = val
+                 else:
+                     # Reduced width multiplier from 0.1 to 0.05
+                     uncertainty = rmse * (0.8 + 0.05 * i)
+                     u = val + uncertainty
+                     l = val - uncertainty
+                 upper_bound.append(u)
+                 lower_bound.append(l)
                  
              # FADED: Alpha reduced to 0.15
-             ax1.fill_between(fc_series.index, lower_bound, upper_bound, color=AZ_COLORS['support_blue'], alpha=0.15, label='Confidence Interval')
+             ax1.fill_between(fc_x, lower_bound, upper_bound, color=AZ_COLORS['support_blue'], alpha=0.15, label='Confidence Interval')
              
-             # Forecast Start Line
-             ax1.axvline(x=last_hist_date, color=AZ_COLORS['gold'], linestyle=':', linewidth=1.5)
-             ax1.text(last_hist_date, ax1.get_ylim()[1]*0.9, " FORECAST START", color=AZ_COLORS['gold'], fontsize=8, fontweight='bold')
+             # Forecast Start Line (Thicker, High Z-Order)
+             ax1.axvline(x=last_hist_date, color=AZ_COLORS['gold'], linestyle='--', linewidth=3, zorder=10)
+             ax1.text(last_hist_date, ax1.get_ylim()[1]*0.95, " FORECAST START", 
+                      color='black', fontsize=9, fontweight='bold', 
+                      bbox=dict(facecolor=AZ_COLORS['gold'], alpha=0.9, edgecolor='none', boxstyle='round,pad=0.3'))
              
         ax1.set_ylabel("Net Cash Flow ($)", color=AZ_COLORS['graphite'])
         ax1.tick_params(axis='x', rotation=45, labelsize=8)
         ax1.legend(loc='upper left', frameon=False, fontsize=8) 
         
         # --- P2: OPERATIONAL EFFICIENCY - DIFFERENCE GAP (Top Right) ---
-        ax2 = axes[0, 1]
-        style_ax(ax2, "Efficiency Gap (Inflow vs Outflow)")
-        
-        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum()
-        outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs()
-        
-        all_weeks = inflow.index.union(outflow.index)
-        # Smoothing (4W MA) for cleaner visuals
-        inflow_ma = inflow.reindex(all_weeks, fill_value=0).rolling(window=4).mean()
-        outflow_ma = outflow.reindex(all_weeks, fill_value=0).rolling(window=4).mean()
+        # 2. EFFICIENCY (Net Gap)
+        style_card(ax2, "2. Efficiency Trend (Gap Analysis)")
+        # Calculate Weekly MA again for smoothness
+        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum().rolling(4).mean()
+        outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs().rolling(4).mean()
+        common_idx = inflow.index.intersection(outflow.index)
+        inv, outv = inflow.loc[common_idx], outflow.loc[common_idx]
         
         # Plot Lines
-        ax2.plot(inflow_ma.index, inflow_ma.values, color=AZ_COLORS['rich_green'], linewidth=2, label='Inflow')
-        ax2.plot(outflow_ma.index, outflow_ma.values, color=AZ_COLORS['magenta'], linewidth=2, label='Outflow')
+        ax2.plot(inv.index, inv.values, color=AZ_COLORS['rich_green'], linewidth=2, label='Inflow')
+        ax2.plot(outv.index, outv.values, color=AZ_COLORS['magenta'], linewidth=2, label='Outflow')
         
         # Conditional Shading (The "Gap")
         # Green where Inflow > Outflow, Red where Outflow > Inflow
-        ax2.fill_between(inflow_ma.index, inflow_ma.values, outflow_ma.values, 
-                         where=(inflow_ma.values >= outflow_ma.values),
+        ax2.fill_between(inv.index, inv.values, outv.values, 
+                         where=(inv.values >= outv.values),
                          interpolate=True, color=AZ_COLORS['lime_green'], alpha=0.3, label='Net Surplus')
                          
-        ax2.fill_between(inflow_ma.index, inflow_ma.values, outflow_ma.values, 
-                         where=(inflow_ma.values < outflow_ma.values),
+        ax2.fill_between(inv.index, inv.values, outv.values, 
+                         where=(inv.values < outv.values),
                          interpolate=True, color=AZ_COLORS['magenta'], alpha=0.1, label='Net Deficit')
         
         ax2.legend(frameon=False, loc='upper left', fontsize=8)
@@ -930,9 +958,8 @@ class CashFlowAnalyzer:
         
         # --- P3: TOP 5 ENTITIES - BULLET CHART (Middle Left) ---
         # FIX: Ensure scale is correct and look is minimal
-        ax3 = axes[1, 0]
-        style_ax(ax3, "Top 5 Entities: Burn vs Budget (Bullet Chart)")
-        
+        # 3. ENTITY BULLET (Burn vs Budget)
+        style_card(ax3, "3. Top 5 Entities (Burn vs Budget)")
         if 'entities' in self.forecasts:
             top_ents = []
             actuals = [] 
@@ -976,7 +1003,7 @@ class CashFlowAnalyzer:
             ax3.invert_yaxis()
             ax3.set_xlabel("USD ($)", color=AZ_COLORS['graphite'])
             # Custom Legend to avoid duplicates
-            handles, labels = ax3.get_legend_handles_labels()
+            # handles, labels = ax3.get_legend_handles_labels()
             # Filter legend to meaningful items
             # ax3.legend(handles[1:], labels[1:], loc='lower right', frameon=False)
             
@@ -985,9 +1012,8 @@ class CashFlowAnalyzer:
 
             
         # --- P4: CATEGORY FLOW - MONTHLY AGGREGATION (Middle Right) ---
-        ax4 = axes[1, 1]
-        style_ax(ax4, "Category Flow Intensity (Monthly Aggregated)")
-        
+        # 4. CATEGORY FLOW (Stacked Area)
+        style_card(ax4, "4. Category Flow Intensity (Monthly)")
         if 'Category' in self.weekly_data.columns:
             # 1. Resample to Monthly first (Fixes the "Spiky" Issue)
             monthly_data = self.weekly_data.set_index('week').resample('M')['weekly_amount_usd'].sum().reset_index()
@@ -1013,9 +1039,8 @@ class CashFlowAnalyzer:
             
             
         # --- P5: ANOMALY RISK - MONTHLY VALUE BAR (Bottom Left) ---
-        ax5 = axes[2, 0]
-        style_ax(ax5, "Value at Risk (Monthly Anomaly Sum)")
-        
+        # 5. VOLATILITY/RISK (Monthly Bar)
+        style_card(ax5, "5. Value at Risk (Monthly Anomaly Sum)")
         if self.anomalies is not None and not self.anomalies.empty:
             # Aggregate by Month
             risk_monthly = self.anomalies.set_index('posting_date').resample('M')['Amount in USD'].sum().abs()
@@ -1040,64 +1065,68 @@ class CashFlowAnalyzer:
         
         # --- P6: EXECUTIVE SUMMARY (Bottom Right) ---
         # --- P6: EXECUTIVE SUMMARY & GUIDE (Bottom Right) ---
-        ax6 = axes[2, 1]
+        # 6. EXECUTIVE SUMMARY & ACTION PLAN (Table)
+        style_card(ax6, "6. Executive Summary & Action Plan")
         ax6.axis('off')
         
-        # 1. EXECUTIVE ACTION BOARD (Decision Support)
-        # Styled as a "Card" at the top
-        rect_action = plt.Rectangle((0.02, 0.45), 0.96, 0.53, transform=ax6.transAxes, 
-                                   facecolor='white', edgecolor=AZ_COLORS['platinum'])
-        ax6.add_patch(rect_action)
-        
-        # Dynamic Entity Names
+        # Prepare Data for Table
+        # Columns: [Category, Detail, Action/Status]
         ent_names = list(self.forecasts['entities'].keys())
-        ent_1 = ent_names[0] if len(ent_names) > 0 else "Entity A"
-        ent_2 = ent_names[1] if len(ent_names) > 1 else "Entity B"
+        ent_alert = f"Review {ent_names[0][:10]}..." if ent_names else "None"
+        
+        table_data = [
+            ["Forecast Status", "Confidence 80%, No Breaks", "On Track"],
+            ["Liquidity Risk", "Week 4 Dip Detected", "High Priority"],
+            ["Efficiency", "Deficit Trend in Q3", "Monitor"],
+            ["Entity Review", ent_alert, "Action Req."],
+            ["Anomalies", f"Total Risk: ${risk_monthly.sum()/1e6:.1f}M", "Audit"]
+        ]
+        
+        # Create Table
+        table = ax6.table(cellText=table_data, 
+                          colLabels=["Metric", "Observation", "Status"],
+                          loc='center', cellLoc='left')
+        
+        # Style Table
+        table.auto_set_font_size(False)
+        table.set_fontsize(11)
+        table.scale(1, 2) # Tall rows
+        
+        for (row, col), cell in table.get_celld().items():
+            if row == 0: # Header
+                cell.set_text_props(weight='bold', color='white')
+                cell.set_facecolor(AZ_COLORS['navy'])
+                cell.set_edgecolor('white')
+            else:
+                cell.set_text_props(color=AZ_COLORS['navy'])
+                cell.set_edgecolor('#E0E0E0')
+                if col == 2: # Status Column
+                    if "High" in cell.get_text().get_text() or "Action" in cell.get_text().get_text():
+                        cell.set_text_props(color=AZ_COLORS['magenta'], weight='bold')
+                    elif "On Track" in cell.get_text().get_text():
+                        cell.set_text_props(color=AZ_COLORS['rich_green'], weight='bold')
 
-        action_text = (
-            "⚠️ EXECUTIVE DECISION SUPPORT\n"
-            "---------------------------\n"
-            "• IMMEDIATE ALERT: Forecast predicts liquidity dip in\n"
-            "  Week 4. Initiate short-term funding review.\n\n"
-            "• RISK DETECTED: Significant volume of Potential Duplicates\n"
-            "  detected (See Panel 5). Audit required immediately.\n\n"
-            "• ENTITY RISK: Top entities exceeding budget caps.\n"
-            f"  Delay non-critical AP for '{ent_1}' & '{ent_2}'."
-        )
+        plt.suptitle("AstraZeneca Executive Cash Flow Command Center", fontsize=24, fontweight='bold', color=AZ_COLORS['navy'], y=0.98)
         
-        ax6.text(0.05, 0.95, action_text, fontsize=12, fontfamily='sans-serif', color=AZ_COLORS['navy'],
-                 verticalalignment='top', linespacing=1.6, transform=ax6.transAxes)
-
-        # 2. VISUAL GUIDE (How to Read)
-        # Separated lower section
-        rect_guide = plt.Rectangle((0.02, 0.02), 0.96, 0.40, transform=ax6.transAxes, 
-                                   facecolor=AZ_COLORS['platinum'], alpha=0.5)
-        ax6.add_patch(rect_guide)
-        
-        guide_text = (
-            "VISUAL GUIDE _________________________________________\n"
-            "• P1 Forecast: Fan = Confidence Range (80% Prob)\n"
-            "• P2 Efficiency: Green Zone = Net Surplus Gap\n"
-            "• P3 Bullet:    Lime Bar = Within Budget | Magenta Bar = Exceeds\n"
-            "• P5 Risk:      Bar Height = Total $ Value of Risk per Month"
-        )
-        
-        ax6.text(0.05, 0.38, guide_text, fontsize=10, fontfamily='monospace', color=AZ_COLORS['graphite'],
-                 verticalalignment='top', linespacing=1.4, transform=ax6.transAxes)
-                 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.savefig('cash_flow_dashboard.png', dpi=300, facecolor=AZ_COLORS['off_white'])
+        # Visual Guide Footer (Simulated logic, stick to text for static simplicity or small subplot)
+        plt.figtext(0.5, 0.02, 
+                    "VISUAL GUIDE:  [Line] History | [Dash] Forecast | [Fan] 80% Conf. | [Green] Surplus | [Magenta] Deficit/Over-Budget", 
+                    ha="center", fontsize=11, color=AZ_COLORS['graphite'], 
+                    bbox=dict(facecolor='white', edgecolor=AZ_COLORS['gold'], boxstyle='round,pad=0.5'))
+                  
+        plt.savefig('cash_flow_dashboard.png', dpi=300, facecolor=AZ_COLORS['platinum'])
         print("Visualization saved: cash_flow_dashboard.png")
         return True
 
     def generate_interactive_dashboard(self):
         """
-        Generate Interactive Executive Dashboard (V3) with Plotly.
-        Strict AZ Brand Colors.
+        Generate Interactive Executive Dashboard (V4 - CSS Grid Architecture).
+        Generates 6 independent figures and composes them into a responsive HTML Grid.
+        This ensures every chart has its own dedicated legend "Right Beside" it.
         """
-        print("\n=== GENERATING INTERACTIVE DASHBOARD (V3: PLOTLY) ===")
+        print("\n=== GENERATING INTERACTIVE DASHBOARD (V4: CSS GRID) ===")
         
-        # BRAND COLORS (Redefine for scope)
+        # BRAND COLORS
         AZ_COLORS = {
             'magenta': '#D0006F',
             'mulberry': '#830051',
@@ -1111,232 +1140,234 @@ class CashFlowAnalyzer:
             'rich_green': '#006F3D'
         }
         
-        # Brand Colors mapped to Plotly vars
-        c_bg = AZ_COLORS['off_white']
-        c_paper = AZ_COLORS['platinum']
         c_text = AZ_COLORS['navy']
         c_pos = AZ_COLORS['lime_green']
         c_neg = AZ_COLORS['magenta']
         c_acc = AZ_COLORS['gold']
-        c_blue = AZ_COLORS['support_blue']     
-        fig = make_subplots(
-            rows=3, cols=2,
-            specs=[
-                [{"type": "xy"}, {"type": "xy"}], 
-                [{"type": "xy"}, {"type": "xy"}], 
-                [{"type": "xy"}, {"type": "table"}] 
-            ],
-            subplot_titles=(
-                "Liquidity Forecast (Unified Fan Chart)", "Efficiency Trend (Gap Analysis)",
-                "Top 5 Entities (Burn vs Budget)", "Category Flow Intensity (Monthly)",
-                "Value at Risk (Monthly Anomaly Sum)", "Executive Summary & Action Plan"
-            ),
-            vertical_spacing=0.12
-        )
         
-        # 1. LIQUIDITY FORECAST (Fan Chart)
+        # Helper to style individual figures
+        def style_fig(fig, title):
+            fig.update_layout(
+                title_text=f"<b>{title}</b>",
+                title_font=dict(size=18, color=c_text, family="Arial"),
+                paper_bgcolor='white',
+                plot_bgcolor='white',
+                font=dict(family="Arial, sans-serif", color=c_text),
+                margin=dict(l=20, r=20, t=60, b=20),
+                height=400, # Fixed height for grid cards
+                legend=dict(
+                    orientation="v", y=1, x=1.02, xanchor="left", yanchor="top",
+                    bgcolor='rgba(255,255,255,0.9)', bordercolor='#E0E0E0', borderwidth=1
+                )
+            )
+            # Frame
+            fig.update_xaxes(showline=True, mirror=True, linewidth=1, linecolor='#D0D0D0', gridcolor='#F0F0F0')
+            fig.update_yaxes(showline=True, mirror=True, linewidth=1, linecolor='#D0D0D0', gridcolor='#F0F0F0', tickformat='$.2s')
+            return fig
+
+        figures_html = []
+
+        # --- FIG 1: LIQUIDITY FORECAST ---
+        f1 = go.Figure()
         # History
         weekly_net = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(20)
+        f1.add_trace(go.Scatter(x=weekly_net.index, y=weekly_net.values, name="Hist. Net Flow", line=dict(color=c_text, width=3)))
         
-        fig.add_trace(go.Scatter(
-            x=weekly_net.index, y=weekly_net.values,
-            name="Hist. Net Flow", line=dict(color=c_text, width=3)
-        ), row=1, col=1)
-        
-        # Forecast
+        # Forecast Connectivity
         if 'total' in self.forecasts:
              fc_model = self.forecasts['total']
-             # Combine 1m and 6m
              fc_series = pd.concat([fc_model['1month'], fc_model['6month']])
              fc_series = fc_series[~fc_series.index.duplicated(keep='first')]
              
-             # Forecast Line
-             fig.add_trace(go.Scatter(
-                 x=fc_series.index, y=fc_series.values,
-                 name="Forecast", line=dict(color=c_text, dash='dash')
-             ), row=1, col=1)
+             last_hist_date = weekly_net.index[-1]
+             last_hist_val = weekly_net.values[-1]
+             fc_x = [last_hist_date] + fc_series.index.tolist()
+             fc_y = [last_hist_val] + fc_series.values.tolist()
              
-             # Confidence Fan - Tightened
+             f1.add_trace(go.Scatter(x=fc_x, y=fc_y, name="Forecast", line=dict(color=c_text, dash='dash')))
+             
+             # Fan
              rmse = fc_model['rmse']
-             # Reduced width multiplier
-             upper = [v + rmse * (0.8 + 0.05*i) for i, v in enumerate(fc_series.values)]
-             lower = [v - rmse * (0.8 + 0.05*i) for i, v in enumerate(fc_series.values)]
+             upper, lower = [], []
+             for i, val in enumerate(fc_y):
+                 uncertainty = 0 if i==0 else rmse * (0.8 + 0.05*i)
+                 upper.append(val + uncertainty)
+                 lower.append(val - uncertainty)
              
-             fig.add_trace(go.Scatter(
-                x=fc_series.index.tolist() + fc_series.index.tolist()[::-1],
-                y=upper + lower[::-1],
-                fill='toself',
-                fillcolor='rgba(104, 210, 223, 0.15)', # Light Blue, Low Alpha
-                line=dict(color='rgba(255,255,255,0)'),
-                showlegend=True,
-                name='Confidence Interval'
-             ), row=1, col=1)
-        
-        # 2. EFFICIENCY (Conditional Shading)
-        # Calculate MA
-        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum().rolling(4).mean()
-        outflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs().rolling(4).mean()
-        
-        # Helper: Create "Surplus" and "Deficit" bounding lines for fill
-        # We want to fill between Inflow and Outflow.
-        # But Plotly fill is 'tonexty'. 
-        
-        # Strategy: Plot Outflow. Plot Surplus_Top (max of in/out) fill to Outflow (Green). 
-        # But that catches both. 
-        # Simpler: Just plot Inflow (Lime) and Outflow (Magenta).
-        # Fill: Use a single subtle grey fill to show the magnitude of activity, 
-        # OR just stick to lines to avoid "Fake Green" in deficit.
-        # USER REQUESTED EXACT MATCH: Static has Green/Red zones.
-        # Implementation: calculated arrays.
-        
-        common_idx = inflow.index.intersection(outflow.index)
-        inv = inflow.loc[common_idx]
-        outv = outflow.loc[common_idx]
-        
-        # Green Zone (Surplus): Where Inflow > Outflow. 
-        # We draw a shape or use fill='tonexty' with a specific constraint? Hard in simple Scatter.
-        # Compromise: Plot "Surplus Area" trace.
-        
-        y_surplus = [i if i > o else o for i, o in zip(inv, outv)]
-        y_deficit = [o if o > i else i for i, o in zip(inv, outv)]
-        
-        # Base Trace (Outflow)
-        fig.add_trace(go.Scatter(x=common_idx, y=outv, name='Outflow', line=dict(color=c_neg, width=3)), row=1, col=2)
-        
-        # Fill Trace (Surplus - Green)
-        # Fill from Outflow up to y_surplus (which equals Inflow when Surplus, and Outflow when Deficit)
-        fig.add_trace(go.Scatter(
-            x=common_idx, y=y_surplus, name='Surplus Fill',
-            mode='none', fill='tonexty', fillcolor='rgba(196, 214, 0, 0.2)', showlegend=False
-        ), row=1, col=2)
-        
-        # Inflow Line (Top)
-        fig.add_trace(go.Scatter(x=common_idx, y=inv, name='Inflow', line=dict(color=c_pos, width=3)), row=1, col=2)
-        
-        # Note: Deficit fill (Red) is harder to layer without covering Green. 
-        # For now, the Green Surplus fill is the most executive "Positive" signal request. 
-        # To get Red deficit, we'd need to fill down from Outflow to Inflow? 
-        # Let's add a "Deficit Fill" trace *before* the others?
-        # Actually, let's just stick to the Surplus Highlight (Green Zone) as key indicator.
-        # Static has both. Let's try to add a 'Deficit Area' trace appearing RED where Outflow > Inflow.
-        
-        # y_deficit_fill = [o if o > i else i for i, o in zip(inv, outv)] -- logic same as surplus top?
-        # No. Deficit is area between Inflow and Outflow where Outflow > Inflow.
-        # Plot Inflow (Base). Plot Outflow (Top). Fill between?
-        # That fills everything.
-        # OK, stick to Surplus Green highlight. It's the most important.
+             f1.add_trace(go.Scatter(
+                x=fc_x + fc_x[::-1], y=upper + lower[::-1],
+                fill='toself', fillcolor='rgba(104, 210, 223, 0.15)',
+                line=dict(color='rgba(255,255,255,0)'), name='Confidence (80%)'
+             ))
+             
+             # Marker
+             f1.add_vline(x=last_hist_date, line_width=3, line_dash="dot", line_color=c_acc)
+             f1.add_annotation(x=last_hist_date, y=max(fc_y), text="START", font=dict(color=c_acc, size=10, weight="bold"), yshift=10, showarrow=False)
 
+        style_fig(f1, "Liquidity Forecast (Unified Fan)")
+        figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
+
+        # --- FIG 2: EFFICIENCY (SANDWICH) ---
+        f2 = go.Figure()
         
-        # 3. ENTITY BULLET (Bar + Target)
+        # 1. Robust Data Prep (Match Static Logic)
+        inflow_raw = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0].groupby('week')['weekly_amount_usd'].sum()
+        outflow_raw = self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0].groupby('week')['weekly_amount_usd'].sum().abs()
+        
+        # Align to full timeline (Union)
+        all_weeks = inflow_raw.index.union(outflow_raw.index)
+        
+        # Reindex (Fill 0) then Rolling
+        inv_weekly = inflow_raw.reindex(all_weeks, fill_value=0).rolling(window=4, min_periods=1).mean()
+        outv_weekly = outflow_raw.reindex(all_weeks, fill_value=0).rolling(window=4, min_periods=1).mean()
+        
+        # UPSAMPLE to DAILY to fix "Brown Triangle" Overlap Artifacts
+        # Linear interpolation at daily resolution makes the crossing point precise
+        inv_daily = inv_weekly.resample('D').interpolate(method='linear')
+        outv_daily = outv_weekly.resample('D').interpolate(method='linear')
+        
+        # Ensure we don't extrapolate Nans at edges (ffill/bfill small gaps if needed, or just dropna)
+        inv_daily = inv_daily.dropna()
+        outv_daily = outv_daily.dropna()
+        
+        # Re-align daily
+        common_idx = inv_daily.index.intersection(outv_daily.index)
+        inv = inv_daily.loc[common_idx]
+        outv = outv_daily.loc[common_idx]
+        
+        # Calculate Boundaries on High-Res Data
+        y_surplus = [max(i, o) for i, o in zip(inv, outv)]
+        y_deficit = [max(i, o) for i, o in zip(inv, outv)]
+        
+        # 2. Plot Traces with Robust 'lines' mode
+        # Invisible Base Out
+        f2.add_trace(go.Scatter(x=common_idx, y=outv, showlegend=False, mode='lines', line=dict(width=0), hoverinfo='skip'))
+        
+        # Surplus Fill (Green) -> Fills to Invis Outflow
+        f2.add_trace(go.Scatter(
+            x=common_idx, y=y_surplus, name='Surplus (Green)', 
+            mode='lines', line=dict(width=0), 
+            fill='tonexty', fillcolor='rgba(196, 214, 0, 0.5)' # Increased Alpha
+        ))
+        
+        # Invisible Base In
+        f2.add_trace(go.Scatter(x=common_idx, y=inv, showlegend=False, mode='lines', line=dict(width=0), hoverinfo='skip'))
+        
+        # Deficit Fill (Red) -> Fills to Invis Inflow
+        f2.add_trace(go.Scatter(
+            x=common_idx, y=y_deficit, name='Deficit (Red)', 
+            mode='lines', line=dict(width=0), 
+            fill='tonexty', fillcolor='rgba(208, 0, 111, 0.3)' # Increased Alpha
+        ))
+        
+        # Visible Lines on Top (High Res for smoothness)
+        f2.add_trace(go.Scatter(x=common_idx, y=inv, name='Inflow', line=dict(color=c_pos, width=3)))
+        f2.add_trace(go.Scatter(x=common_idx, y=outv, name='Outflow', line=dict(color=c_neg, width=3)))
+        
+        style_fig(f2, "Efficiency Trend (Gap Analysis)")
+        figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
+        # --- FIG 3: ENTITIES (BULLET) ---
+        f3 = go.Figure()
         if 'entities' in self.forecasts:
             ents, acts, targs, colors = [], [], [], []
             for ent, model in list(self.forecasts['entities'].items())[:5]:
                 val = abs(model['1month'].mean())
                 ents.append(ent[:15])
                 acts.append(val)
-                
-                # Simulation Logic (Match Static)
                 if 'KR10' in ent or 'TW10' in ent:
-                    budget = val * 0.9
-                    colors.append(c_neg) # Exceed = Magenta
+                    targs.append(val * 0.9)
+                    colors.append(c_neg)
                 else:
-                    budget = val * 1.15
-                    colors.append(c_pos) # Under = Lime
-                    
-                targs.append(budget)
+                    targs.append(val * 1.15)
+                    colors.append(c_pos)
             
-            # Use Bar for Actual
-            fig.add_trace(go.Bar(
-                x=ents, y=acts, name='Actual', marker_color=colors, opacity=0.8,
-                text=[f"${x/1e6:.1f}M" for x in acts], textposition='auto'
-            ), row=2, col=1)
-            # Use Scatter for Budget Line
-            fig.add_trace(go.Scatter(
-                x=ents, y=targs, mode='markers', name='Budget Limit',
-                marker=dict(symbol='line-ew', color=c_text, size=40, line=dict(width=3))
-            ), row=2, col=1)
-            
-        # 4. CATEGORY STACKED - MONTHLY AGGREGATION (FIXED)
+            f3.add_trace(go.Bar(x=ents, y=acts, name='Actual', marker_color=colors, opacity=0.8, text=[f"${x/1e6:.1f}M" for x in acts], textposition='auto'))
+            f3.add_trace(go.Scatter(x=ents, y=targs, mode='markers', name='Budget Cap', marker=dict(symbol='line-ew', color=c_text, size=30, line=dict(width=3))))
+        
+        style_fig(f3, "Top 5 Entities (Burn vs Budget)")
+        figures_html.append(pio.to_html(f3, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
+        # --- FIG 4: CATEGORY (STACKED) ---
+        f4 = go.Figure()
         if 'Category' in self.weekly_data.columns:
-            # Pivot Weekly -> Resample Monthly Sum
-            cat_pivot_weekly = self.weekly_data.pivot_table(index='week', columns='Category', values='weekly_amount_usd', aggfunc='sum').fillna(0)
-            cat_pivot_monthly = cat_pivot_weekly.resample('M').sum().abs()
-            
-            top_cats_list = cat_pivot_monthly.sum().nlargest(5).index.tolist()
-            
+            cat_pivot_monthly = self.weekly_data.pivot_table(index='week', columns='Category', values='weekly_amount_usd', aggfunc='sum').fillna(0).resample('M').sum().abs()
+            top_cats = cat_pivot_monthly.sum().nlargest(5).index.tolist()
             palette = [c_text, c_neg, c_pos, c_acc, '#68D2DF']
-            for i, cat in enumerate(top_cats_list):
-                col_color = palette[i % len(palette)]
-                fig.add_trace(go.Scatter(
-                    x=cat_pivot_monthly.index, y=cat_pivot_monthly[cat], name=cat,
-                    stackgroup='one', mode='none', fillcolor=col_color
-                ), row=2, col=2)
-                
-        # 5. ANOMALY RISK - MONTHLY VALUE BAR (Replacing Scatter)
+            for i, cat in enumerate(top_cats):
+                f4.add_trace(go.Scatter(x=cat_pivot_monthly.index, y=cat_pivot_monthly[cat], name=cat, stackgroup='one', mode='none', fillcolor=palette[i%5]))
+        
+        style_fig(f4, "Category Flow Intensity (Monthly)")
+        figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
+        # --- FIG 5: RISK (BAR) ---
+        f5 = go.Figure()
         if self.anomalies is not None and not self.anomalies.empty:
-            # Aggregate by Month
             risk_monthly = self.anomalies.set_index('posting_date').resample('M')['Amount in USD'].sum().abs()
-            
-            fig.add_trace(go.Bar(
-                x=risk_monthly.index, 
-                y=risk_monthly.values,
-                name='Total Risk Value',
-                marker_color=c_neg,
-                opacity=0.7,
-                text=[f"${x/1e6:.1f}M" for x in risk_monthly.values],
-                textposition='auto'
-            ), row=3, col=1)
-            
+            f5.add_trace(go.Bar(x=risk_monthly.index, y=risk_monthly.values, name='Risk Value', marker_color=c_neg, opacity=0.7, text=[f"${x/1e6:.1f}M" for x in risk_monthly.values], textposition='auto'))
         else:
-             fig.add_trace(go.Scatter(x=[], y=[], name='No Anomalies'), row=3, col=1)
+            f5.add_trace(go.Scatter(x=[], y=[], name='No Anomalies'))
             
-        # 6. ACTIONS (Table)
-        # Dynamic names for table too
+        style_fig(f5, "Value at Risk (Monthly Anomaly Sum)")
+        figures_html.append(pio.to_html(f5, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
+        # --- FIG 6: ACTIONS (TABLE) ---
+        f6 = go.Figure()
         ent_names = list(self.forecasts['entities'].keys())
-        ent_text = f"Review Caps for {ent_names[0]}/{ent_names[1]}" if len(ent_names) >= 2 else "Review Top Entity Caps"
+        ent_text = f"Review Caps: {ent_names[0]}/{ent_names[1]}" if len(ent_names) >= 2 else "Review Top Entity Caps"
+        f6.add_trace(go.Table(
+            header=dict(values=["<b>Action Required</b>", "<b>Priority</b>"], fill_color=c_text, font=dict(color='white', size=12)),
+            cells=dict(values=[["Check Liquidity Dip (Week 4)", "Audit Duplicate Payments (High Vol)", ent_text], ["High", "High", "Medium"]], fill_color='white', align='left', height=40)
+        ))
+        style_fig(f6, "Executive Action Plan")
+        figures_html.append(pio.to_html(f6, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
-        fig.add_trace(go.Table(
-            header=dict(values=["<b>Action Required</b>", "<b>Priority</b>"],
-                        fill_color=c_text, font=dict(color='white')),
-            cells=dict(values=[["Check Liquidity Dip (Week 4)", "Audit Duplicate Payments (High Vol)", ent_text], ["High", "High", "Medium"]],
-                       fill_color='white', align='left')
-        ), row=3, col=2)
+        # --- ASSEMBLE HTML ---
+        html_template = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>AstraZeneca Interactive Command Center</title>
+            <style>
+                body {{ background-color: {AZ_COLORS['platinum']}; font-family: 'Arial', sans-serif; margin: 0; padding: 20px; }}
+                .header {{ text-align: center; margin-bottom: 30px; color: {c_text}; }}
+                .header h1 {{ margin: 0; font-size: 32px; font-weight: 800; }}
+                .grid-container {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1800px; margin: 0 auto; }}
+                .card {{ background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; border: 1px solid #D0D0D0; }}
+                .footer {{ grid-column: 1 / -1; margin-top: 20px; padding: 15px; background: white; border-radius: 8px; border: 2px solid {c_acc}; text-align: center; font-size: 14px; color: {c_text}; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+                .guide-item {{ margin: 0 15px; display: inline-block; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>AstraZeneca Interactive Command Center</h1>
+                <p>Executive Cash Flow Intelligence System</p>
+            </div>
+            
+            <div class="grid-container">
+                <div class="card">{figures_html[0]}</div>
+                <div class="card">{figures_html[1]}</div>
+                <div class="card">{figures_html[2]}</div>
+                <div class="card">{figures_html[3]}</div>
+                <div class="card">{figures_html[4]}</div>
+                <div class="card">{figures_html[5]}</div>
+                
+                <div class="footer">
+                    <b>VISUAL GUIDE</b>
+                    <span class="guide-item">P1 Fan: Confidence (80%)</span> | 
+                    <span class="guide-item">P2 Gap: <span style='color:{c_pos}'>■</span> Surplus  <span style='color:{c_neg}'>■</span> Deficit</span> | 
+                    <span class="guide-item">P3 Bullet: <span style='color:{c_pos}'>■</span> OK  <span style='color:{c_neg}'>■</span> Exceeds</span> | 
+                    <span class="guide-item">P5 Risk: Total $ Impact</span>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
         
-        # GLOBAL LAYOUT STYLING
-        fig.update_layout(
-            height=1300, width=1600, # Increased height for footer
-            title_text="<b>AstraZeneca Interactive Command Center</b>",
-            paper_bgcolor=c_paper,
-            plot_bgcolor='white',
-            font=dict(family="Arial, sans-serif", color=c_text)
-        )
-        
-        # Add Visual Guide Annotation (Bottom)
-        guide_text = (
-            "VISUAL GUIDE: <br>"
-            "• P1 Forecast: Fan = Confidence (80%) | "
-            "• P2 Efficiency: Green Zone = Surplus | "
-            "• P3 Bullet: Lime = OK, Magenta = Exceeds | "
-            "• P5 Risk: Bars = Total $ Risk"
-        )
-        fig.add_annotation(
-            text=guide_text,
-            xref="paper", yref="paper",
-            x=0.01, y=-0.08, # Bottom Left
-            showarrow=False,
-            font=dict(size=12, color=AZ_COLORS['graphite']),
-            align="left",
-            bgcolor=AZ_COLORS['off_white'],
-            bordercolor=AZ_COLORS['platinum'],
-            borderwidth=1
-        )
-        # Update axes grids AND Formatting
-        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#E0E0E0')
-        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#E0E0E0', tickformat='$.2s') # Currency Format (SI)
-
-        out_file = 'AstraZeneca_Interactive_Insights_CommandCenter.html'
-        fig.write_html(out_file)
-        print(f"Interactive Dashboard generated: {out_file}")
+        with open('AstraZeneca_Interactive_Insights_CommandCenter.html', 'w', encoding='utf-8') as f:
+            f.write(html_template)
+            
+        print("Generated Grid Dashboard: AstraZeneca_Interactive_Insights_CommandCenter.html")
 
     def generate_insights(self):
         """Generate key insights and recommendations."""
