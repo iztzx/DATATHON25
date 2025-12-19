@@ -1400,10 +1400,10 @@ class CashFlowAnalyzer:
                     risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M ({top_cat})")
             # Add dip markers with hover showing drivers
             if dip_weeks_1m:
-                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], text=[d[2] for d in dip_weeks_1m], hovertemplate='%{text}<extra></extra>', mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Dip Alert'))
+                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], text=[d[2] for d in dip_weeks_1m], hovertemplate='⚠️ DATA-BASED ESTIMATE<br>%{text}<extra></extra>', mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Forecast Dip (Estimate)'))
 
 
-        style_fig(f2, "1-Month Outlook: Risk Detection")
+        style_fig(f2, "1-Month Outlook")
         figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
 
@@ -1428,8 +1428,9 @@ class CashFlowAnalyzer:
                 risk_6m.append(f"Lowest Point: Week {min_wk.isocalendar()[1]} (${fc_6m.min()/1e6:.1f}M)")
                 risk_6m.append(f"Peak Point: Week {max_wk.isocalendar()[1]} (${fc_6m.max()/1e6:.1f}M)")
 
-        style_fig(f3, "6-Month Trajectory: Insights")
+        style_fig(f3, "6-Month Trajectory")
         figures_html.append(pio.to_html(f3, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
 
         # --- FIG 4: CATEGORY ANALYSIS (Inflow/Outflow Breakdown) ---
         f4 = go.Figure()
@@ -1439,7 +1440,7 @@ class CashFlowAnalyzer:
             f4.add_trace(go.Bar(y=cat_flow.index, x=cat_flow.values, orientation='h', marker_color=colors, text=[f"${v/1e6:.1f}M" for v in cat_flow.values], textposition='outside'))
             f4.update_layout(xaxis_title="Net Cash Flow (USD)", yaxis_title="Category", showlegend=False)
         style_fig(f4, "Category Analysis (Inflow/Outflow)")
-        f4.update_layout(height=500)  # Taller for category names
+        f4.update_layout(height=500)
         figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
 
@@ -1535,6 +1536,7 @@ class CashFlowAnalyzer:
                 <div class="card" id="c2">{figures_html[2]}</div>
                 <div class="card" id="c3">{figures_html[3]}</div>
                 <div class="card full" id="c4">{figures_html[4]}</div>
+
 
                 <div class="card full" style="padding:15px;">
                     <div style="font-weight:bold;font-size:16px;margin-bottom:10px;">Executive Action Plan (Click to navigate)</div>
