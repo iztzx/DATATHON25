@@ -57,7 +57,7 @@ def clean_and_export_data():
                  # Based on user hint, 'Non Netting AP' logic is needed.
                  # Let's inspect potential activity columns
                  top_col = cat_cols[0] 
-                 df['Activity'] = df[top_col]
+                 df['Activity'] = df[top_col].astype(object) # Force Object type
             
             # RULE: "Non Netting AP" -> Operating Outflow (Manual Override)
             mask_nn_ap = df['Category'].astype(str).str.contains("Non Netting AP", case=False, na=False)
@@ -65,6 +65,7 @@ def clean_and_export_data():
                 print(f"  • Fixing {mask_nn_ap.sum()} 'Non Netting AP' entries -> Operating")
                 # Fallback if Activity column is empty or mismatch
                 if 'Activity' in df.columns:
+                    df['Activity'] = df['Activity'].astype(object) # Fix FutureWarning
                     df.loc[mask_nn_ap, 'Activity'] = 'Operating' # Simplification
             
             # RULE: "Other" Logic (Sign-based)

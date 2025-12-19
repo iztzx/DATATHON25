@@ -55,19 +55,11 @@ class CashFlowAnalyzer:
             if 'posting_date' in self.df.columns:
                 self.df['date'] = self.df['posting_date']
             
-            # Load Balance separately? 
-            # The CSV focuses on Flow. Providing separate path for Balance if needed, 
-            # Or assume clean_data.py integrated it (it focused on Flow).
-            # We will re-load Balance from Excel for now as it wasn't in the main flat CSV export
-            # strictly speaking, or we can assume the user wants the FLOW analysis from the CSV.
-            # Let's verify if 'Data - Cash Balance' was exported. It wasn't.
-            # So we keep the raw load for Balance ONLY.
             
-            print("Loading Balance reference from Source...")
-            bal_sheet = pd.read_excel('MATERIALS/Datathon Dataset.xlsx', sheet_name='Data - Cash Balance')
-            self.df_balance = bal_sheet
-            
-            # No need for linkage sheets - CSV is already enriched!
+            # PURE CSV Strategy: No external Excel dependencies
+            # We will derive "Cumulative Position" from Flows if needed, 
+            # rather than relying on a potentially disconnected Balance sheet.
+            self.df_balance = None 
             self.df_cat_link = None 
             self.df_country = None
             
@@ -401,47 +393,35 @@ class CashFlowAnalyzer:
         print("Projecting Ending Cash Balances...")
         self.forecasts['balance'] = {}
         
-        print("Projecting Ending Cash Balances...")
+        # 3. Forecast Cumulative Net Position (Relative Liquidity)
+        # Since we removed external Balance sheet, we track Cumulative Flow Trend
+        print("Projecting Cumulative Net Cash Position...")
         self.forecasts['balance'] = {}
         
-        if self.df_balance is not None and 'Closing Balance' in self.df_balance.columns and not self.df_balance.empty:
-            # Sort by date (assuming 'Date' or similar column exists, otherwise use index)
-            # Inspect columns if needed, but let's assume standard 'Date' or 'Year/Month'
-            # Or just take the last row if chronologically sorted
-             try:
-                 last_balance = self.df_balance['Closing Balance'].iloc[-1]
-                 last_bal_date = self.weekly_data['week'].max() # Approx align with last transaction week
-                 
-                 # Store for Metrics
-                 self.forecasts['balance']['last_actual'] = last_balance
-                 
-                 print(f"  - Last Actual Closing Balance: ${last_balance:,.2f}")
-                 
-                 # Calculate future balances based on Net Flow Forecast
-                 # Future Balance = Previous Balance + Net Flow
-                 
-                 # 1-Month Balance Forecast
-                 fc_1m_flows = self.forecasts['total']['1month']
-                 fc_1m_bal = []
-                 running_bal = last_balance
-                 for flow in fc_1m_flows.values:
-                     running_bal += flow
-                     fc_1m_bal.append(running_bal)
-                 self.forecasts['balance']['1month'] = pd.Series(fc_1m_bal, index=fc_1m_flows.index)
-                 
-                 # 6-Month Balance Forecast
-                 fc_6m_flows = self.forecasts['total']['6month']
-                 fc_6m_bal = []
-                 running_bal = last_balance
-                 for flow in fc_6m_flows.values:
-                     running_bal += flow
-                     fc_6m_bal.append(running_bal)
-                 self.forecasts['balance']['6month'] = pd.Series(fc_6m_bal, index=fc_6m_flows.index)
-             except IndexError:
-                 print("Warning: Could not access Closing Balance (empty?).")
-        else:
-             print("Warning: Cash Balance data missing or empty.")
-             
+        # Start from 0 (Relative Change)
+        last_balance = 0
+        self.forecasts['balance']['last_actual'] = last_balance # Proxy
+        
+        # 1-Month Cumulative Forecast
+        fc_1m_flows = self.forecasts['total']['1month']
+        fc_1m_bal = []
+        running_bal = last_balance
+        for flow in fc_1m_flows.values:
+            running_bal += flow
+            fc_1m_bal.append(running_bal)
+        self.forecasts['balance']['1month'] = pd.Series(fc_1m_bal, index=fc_1m_flows.index)
+        
+        # 6-Month Cumulative Forecast
+        fc_6m_flows = self.forecasts['total']['6month']
+        fc_6m_bal = []
+        running_bal = last_balance
+        for flow in fc_6m_flows.values:
+            running_bal += flow
+            fc_6m_bal.append(running_bal)
+        self.forecasts['balance']['6month'] = pd.Series(fc_6m_bal, index=fc_6m_flows.index)
+        
+        print("  - Generated Relative Liquidity Projection (Cumulative Flow)")
+
         # 4. Category Forecasts (Top Drivers)
         print("Generating forecasts for Top Categories...")
         self.forecasts['categories'] = {}
@@ -452,13 +432,40 @@ class CashFlowAnalyzer:
             top_categories = cat_volumes.nlargest(2).index.tolist()
             
             for cat in top_categories:
-                print(f"  - Forecasting for: {cat}")
+                print(f"  - Forecasting for Category: {cat}")
                 cat_data = self.weekly_data[self.weekly_data['Category'] == cat]
                 cat_weekly = cat_data.groupby('week')['weekly_amount_usd'].sum()
                 # Reindex
                 cat_weekly = cat_weekly.reindex(weekly_totals.index, fill_value=0)
                 
                 self.forecasts['categories'][cat] = self._generate_forecast_model(cat_weekly, cat)
+
+        # 5. Entity Forecasts (Top Spenders) - [NEW] Extracting More Value
+        print("Generating forecasts for Top Entities...")
+        self.forecasts['entities'] = {}
+        
+        if 'Name' in self.df.columns:
+            # Aggregate weekly by Name
+            # We need to rebuild weekly agg for Name since self.weekly_data might not have it grouped
+            # Let's check self.weekly_data or go back to self.df
+            # self.weekly_data grouped by [week, Category, Activity]. Name is lost.
+            # Go back to self.df
+            
+            # Top 2 Spenders (Outflow)
+            outflows = self.df[self.df['Amount in USD'] < 0]
+            top_entities = outflows.groupby('Name')['Amount in USD'].sum().abs().nlargest(2).index.tolist()
+            
+            for ent in top_entities:
+                print(f"  - Forecasting for Entity: {ent}")
+                # Filter and Agg
+                ent_data = self.df[self.df['Name'] == ent]
+                if 'week' not in ent_data.columns:
+                     ent_data['week'] = pd.to_datetime(ent_data['posting_date']).dt.to_period('W').dt.start_time
+                
+                ent_weekly = ent_data.groupby('week')['Amount in USD'].sum()
+                ent_weekly = ent_weekly.sort_index().reindex(weekly_totals.index, fill_value=0)
+                
+                self.forecasts['entities'][ent] = self._generate_forecast_model(ent_weekly, ent)
 
         # 5. EXPORT FORECAST DATA (ESS Ready)
         print("Exporting Forecast Results to CSV...")
@@ -1108,12 +1115,12 @@ class CashFlowAnalyzer:
 
     def generate_interactive_dashboard(self):
         """
-        Generate a high-fidelity, PERFORMANCE-OPTIMIZED interactive dashboard (V2).
-        Uses WebGL for large datasets and aggregated views to prevent lag.
+        Generate a high-fidelity interactive dashboard (Command Center).
+        Optimized for performance and executive presentation.
         """
-        print("\n=== GENERATING INTERACTIVE INSIGHTS DASHBOARD (Optimized V2) ===")
+        print("\n=== GENERATING INTERACTIVE COMMAND CENTER ===")
         
-        # Initialize Subplots
+        # Initialize Subplots with Business-First Titles
         fig = make_subplots(
             rows=4, cols=2,
             specs=[
@@ -1123,65 +1130,61 @@ class CashFlowAnalyzer:
                 [{"type": "table", "colspan": 2}, None]                
             ],
             subplot_titles=(
-                "Cash Flow Forecast (6-Month Horizon)", "Runway Health",
-                "Activity Breakdown", "Top Category Drivers (Next Month)",
-                "FX Volatility Monitoring", "Anomaly Radar (WebGL Optimized)",
-                "Strategic Alerts Board"
+                "Strategic Cash Flow Forecast (Short & Medium Term)", "Operating Efficiency (In/Out Ratio)",
+                "Capital Allocation (Activity Split)", "Key Drivers: Categories & Entities",
+                "Currency Volatility Monitor (FX Risk)", "Anomaly Awareness Radar",
+                "Executive Action Item Board"
             ),
             vertical_spacing=0.08,
             row_heights=[0.3, 0.3, 0.2, 0.2]
         )
         
-        # --- 1. FORECAST ---
-        # Downsample History if too large (e.g., take every 2nd point) to reduce DOM
+        # --- 1. FORECAST (Strategic View) ---
+        # Downsample History if too large (Performance)
         hist_series = self.forecasts['total']['historical']
         if len(hist_series) > 1000:
              hist_series = hist_series.iloc[::2]
              
-        fig.add_trace(go.Scattergl( # WebGL
+        fig.add_trace(go.Scattergl(
             x=hist_series.index, y=hist_series.values,
-            mode='lines', name='Historical Actuals',
+            mode='lines', name='Historical',
             line=dict(color='#003865', width=2)
         ), row=1, col=1)
         
         fc_series = self.forecasts['total']['6month']
-        fig.add_trace(go.Scattergl( # WebGL
+        fig.add_trace(go.Scattergl(
             x=fc_series.index, y=fc_series.values,
-            mode='lines', name='6-Month Forecast',
+            mode='lines', name='Forecast (6M)',
             line=dict(color='#D7004B', width=2, dash='dash')
         ), row=1, col=1)
         
-        # --- 2. GAUGE ---
-        last_bal = self.forecasts['balance'].get('last_actual', 0)
-        # Recalc burn
-        avg_burn = 0
-        if 'Activity' in self.weekly_data.columns:
-            op = self.weekly_data[self.weekly_data['Activity'] == 'Operating']
-            avg_burn = op[op['weekly_amount_usd'] < 0]['weekly_amount_usd'].mean()
-            if np.isnan(avg_burn): avg_burn = 0
-            
-        runway = (last_bal / abs(avg_burn)) if avg_burn != 0 else 0
+        # --- 2. GAUGE: OPERATING EFFICIENCY (Inflow / Outflow) ---
+        # Purely CSV derived. 1.0 = Breakeven.
+        inflow = self.weekly_data[self.weekly_data['weekly_amount_usd'] > 0]['weekly_amount_usd'].sum()
+        outflow = abs(self.weekly_data[self.weekly_data['weekly_amount_usd'] < 0]['weekly_amount_usd'].sum())
+        efficiency = (inflow / outflow) if outflow != 0 else 0
         
         fig.add_trace(go.Indicator(
             mode = "gauge+number+delta",
-            value = runway,
-            title = {'text': "Runway (Weeks)"},
-            delta = {'reference': 12},
+            value = efficiency,
+            title = {'text': "Efficiency (In/Out)"},
+            delta = {'reference': 1.0, 'increasing': {'color': "green"}},
             gauge = {
-                'axis': {'range': [None, 52]},
+                'axis': {'range': [None, 2.0]},
                 'bar': {'color': "#003865"},
                 'steps': [
-                    {'range': [0, 8], 'color': "#D7004B"}, 
-                    {'range': [8, 12], 'color': "gold"},   
-                    {'range': [12, 52], 'color': "#84BD00"} 
+                    {'range': [0, 0.8], 'color': "#D7004B"}, 
+                    {'range': [0.8, 1.0], 'color': "gold"},   
+                    {'range': [1.0, 2.0], 'color': "#84BD00"} 
                 ],
+                'threshold': {'line': {'color': "black", 'width': 4}, 'thickness': 0.75, 'value': 1.0}
             }
         ), row=1, col=2)
         
-        # --- 3. SUNBURST ---
+        # --- 3. SUNBURST (Allocation) ---
         if 'Activity' in self.df.columns and 'Category' in self.df.columns:
             sun_df = self.df.groupby(['Activity', 'Category'])['Amount in USD'].sum().abs().reset_index()
-            # Top 20 only to prevent lag
+            # Top 20 only
             sun_df = sun_df.sort_values('Amount in USD', ascending=False).head(20)
             
             fig.add_trace(go.Sunburst(
@@ -1191,62 +1194,85 @@ class CashFlowAnalyzer:
                 branchvalues="total"
             ), row=2, col=1)
             
-        # --- 4. BAR ---
+        # --- 4. BAR (Drivers: Categories + Entities) ---
+        cats, vals, colors = [], [], []
+        # Categories
         if 'categories' in self.forecasts:
-            cats, vals, colors = [], [], []
             for cat, model in self.forecasts['categories'].items():
                 m = model['1month'].mean()
-                cats.append(cat); vals.append(m)
+                cats.append(f"Cat: {cat}"); vals.append(m)
                 colors.append('#84BD00' if m > 0 else '#D7004B')
+        # Entities (NEW)
+        if 'entities' in self.forecasts:
+            for ent, model in self.forecasts['entities'].items():
+                m = model['1month'].mean()
+                cats.append(f"Ent: {ent}"); vals.append(m)
+                colors.append('#003865') # Navy for Entities
             
-            fig.add_trace(go.Bar(
-                x=cats, y=vals, marker_color=colors, name='Flow'
-            ), row=2, col=2)
+        fig.add_trace(go.Bar(
+            x=cats, y=vals, marker_color=colors, name='Flow'
+        ), row=2, col=2)
             
-        # --- 5. FX LINE ---
+        # --- 5. FX LINE (Risk) ---
         if 'fx_rate_variance' in self.df.columns:
-            # Resample is key for performance
             fx_data = self.df.set_index('posting_date').resample('W')['fx_rate_variance'].mean()
             fig.add_trace(go.Scattergl(
                 x=fx_data.index, y=fx_data.values,
-                mode='lines+markers', name='FX Variance',
-                line=dict(color='orange')
+                mode='lines', name='FX Variance', 
+                line=dict(color='orange', width=2),
+                fill='tozeroy' 
             ), row=3, col=1)
             
-        # --- 6. ANOMALY SCATTER (Optimization Target) ---
+        # --- 6. ANOMALY RADAR ---
         if self.anomalies is not None and not self.anomalies.empty:
-            # Limit points if massive
             plot_anoms = self.anomalies
             if len(plot_anoms) > 2000:
-                plot_anoms = plot_anoms.head(2000) # Cap for performance
+                plot_anoms = plot_anoms.head(2000)
                 
             fig.add_trace(go.Scattergl(
                 x=plot_anoms['posting_date'], 
                 y=plot_anoms['Amount in USD'],
                 mode='markers',
-                marker=dict(color='red', size=6, line=dict(width=0)), # Removing outline speeds up render
-                name='Anomalies',
+                marker=dict(color='red', size=6, opacity=0.6),
+                name='Anomaly',
                 text=plot_anoms['Category']
             ), row=3, col=2)
             
-        # --- 7. TABLE ---
+        # --- 7. ACTION BOARD (Table) ---
         alerts = [
-            ["Liquidity", f"Runway: {runway:.1f} wks", "High" if runway < 8 else "Medium"],
-            ["Entity Risk", "Top 5 Entities consume 60% of cash", "Medium"],
+            ["Efficiency", f"Ratio: {efficiency:.2f} (Target > 1.0)", "High" if efficiency < 0.9 else "Medium"],
+            ["Entity Risk", "Top Entities Forecasted to Burn Cash", "Medium"],
             ["FX Status", "Volatility detected in KR10", "Info"]
         ]
+        
+        # Professional Styling
         fig.add_trace(go.Table(
-            header=dict(values=["Area", "Insight", "Priority"], fill_color='#003865', font=dict(color='white')),
-            cells=dict(values=list(zip(*alerts)), fill_color='lavender', align='left')
+            header=dict(values=["<b>Area</b>", "<b>Insight</b>", "<b>Priority</b>"],
+                        fill_color='#003865',
+                        align='left',
+                        font=dict(color='white', size=13)),
+            cells=dict(values=list(zip(*alerts)),
+                       fill_color=[['white', '#f4f4f4']*5], # Alternating rows
+                       align='left',
+                       font=dict(color='black', size=12),
+                       height=30)
         ), row=4, col=1)
         
         # Polish Layout
-        fig.update_layout(height=1100, width=1300, title_text="Performance Dashboard (V2 Options)", template="plotly_white", showlegend=False)
+        fig.update_layout(
+            height=1200, 
+            width=1400, 
+            title_text="<b>AstraZeneca Strategic Cash Flow Command Center (Pure Data)</b>",
+            title_x=0.5, 
+            template="plotly_white",
+            showlegend=False,
+            font=dict(family="Arial, sans-serif")
+        )
         
         # Save
-        out_file = 'AstraZeneca_Interactive_Insights_Optimized.html'
-        fig.write_html(out_file) # Standard write
-        print(f"Optimized Interactive Dashboard: {out_file}")
+        out_file = 'AstraZeneca_Interactive_Insights_CommandCenter.html'
+        fig.write_html(out_file)
+        print(f"Command Center Dashboard generated: {out_file}")
     
     def generate_insights(self):
         """Generate key insights and recommendations."""
