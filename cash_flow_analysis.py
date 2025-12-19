@@ -1319,9 +1319,10 @@ class CashFlowAnalyzer:
 
         # --- FIG 2: 1-MONTH FORECAST WITH CONFIDENCE ---
         f2 = go.Figure()
-        hist = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(8)
+        hist = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()  # All historical data
         f2.add_trace(go.Scatter(x=hist.index, y=hist.values, name="History", line=dict(color=c_text, width=3)))
         risk_1m = []
+        dip_weeks_1m = []
         if 'total' in self.forecasts:
             fc_1m = self.forecasts['total']['1month']
             rmse = self.forecasts['total']['rmse']
@@ -1332,21 +1333,26 @@ class CashFlowAnalyzer:
             # Confidence: starts from first forecast point
             upper_c, lower_c = fc_1m + rmse, fc_1m - rmse
             f2.add_trace(go.Scatter(x=list(fc_1m.index)+list(fc_1m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(196,214,0,0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
-            # Risk Detection
+            # Risk Detection + Dip Highlighting
             avg_h = hist.mean()
             for wk, val in fc_1m.items():
                 if val < avg_h * 0.7:
+                    dip_weeks_1m.append((wk, val))
                     w_num = wk.isocalendar()[1] if hasattr(wk, 'isocalendar') else 0
                     grp = self.df[self.df['posting_date'].dt.isocalendar().week == w_num].groupby('Category')['Net_Amount_USD'].sum() if w_num else pd.Series(dtype=float)
                     cat = grp.idxmin() if not grp.empty else "Mixed"
-                    risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M likely driven by {cat}.")
+                    risk_1m.append(f"Week {w_num}: Dip to ${val/1e6:.1f}M ({cat})")
+            # Add dip markers
+            if dip_weeks_1m:
+                f2.add_trace(go.Scatter(x=[d[0] for d in dip_weeks_1m], y=[d[1] for d in dip_weeks_1m], mode='markers', marker=dict(color=c_neg, size=14, symbol='triangle-down', line=dict(color='white', width=2)), name='Dip Alert'))
 
         style_fig(f2, "1-Month Outlook (Confidence Mask)")
         figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
+
         # --- FIG 3: 6-MONTH FORECAST WITH INSIGHTS ---
         f3 = go.Figure()
-        hist_long = self.weekly_data.groupby('week')['weekly_amount_usd'].sum().tail(12)
+        hist_long = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()  # All historical data
         f3.add_trace(go.Scatter(x=hist_long.index, y=hist_long.values, name="History", line=dict(color=c_text, width=3)))
         risk_6m = []
         if 'total' in self.forecasts:
@@ -1375,16 +1381,17 @@ class CashFlowAnalyzer:
         burn_rate = total_out / 52
         dupe_val = dupe_by_ent.sum() if not dupe_by_ent.empty else 0
 
-        # ACTION TABLE (Duplicates only, no weekend mixing)
-        table_html = "<table class='action-table'><thead><tr><th>Action & Justification</th><th>Priority</th></tr></thead><tbody>"
+        # ACTION TABLE (Clickable - links to charts)
+        table_html = "<table class='action-table'><thead><tr><th>Action & Justification</th><th>Priority</th><th></th></tr></thead><tbody>"
         actions = [
-            (f"Audit Duplicate Payments: ${dupe_val/1e6:.1f}M recoverable across {len(dupe_by_ent)} entities.", "High"),
-            (f"Review Weekend Postings: {len(self.df[self.df['posting_date'].dt.dayofweek >= 5])} flagged.", "Medium"),
+            (f"Audit Duplicate Payments: ${dupe_val/1e6:.1f}M recoverable across {len(dupe_by_ent)} entities.", "High", "c1"),
+            (f"Review Weekend Postings: {len(self.df[self.df['posting_date'].dt.dayofweek >= 5])} flagged.", "Medium", "c0"),
         ]
-        for r in risk_1m[:1]: actions.append((r, "High"))
-        for act, prio in actions:
-            table_html += f"<tr><td>{act}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td></tr>"
+        for r in risk_1m[:1]: actions.append((r, "High", "c2"))
+        for act, prio, target in actions:
+            table_html += f"<tr class='action-row' onclick=\"focusChart('{target}')\"><td>{act}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td><td>→</td></tr>"
         table_html += "</tbody></table>"
+
 
         # RISK ALERTS
         risk_html = "<div class='risk-alert'><b>⚡ Upcoming Risks:</b><ul>"
@@ -1408,17 +1415,27 @@ class CashFlowAnalyzer:
                 .m-val {{ font-size: 28px; font-weight: 900; color: {AZ['mulberry']}; }}
                 .m-label {{ font-size: 10px; text-transform: uppercase; font-weight: bold; opacity: 0.7; }}
                 .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }}
-                .card {{ background: white; border-radius: 10px; padding: 8px; border: 1px solid #DDD; }}
+                .card {{ background: white; border-radius: 10px; padding: 8px; border: 1px solid #DDD; transition: all 0.3s; }}
+                .card.focused {{ border: 3px solid {c_neg}; box-shadow: 0 4px 15px rgba(208,0,111,0.3); }}
                 .full {{ grid-column: 1 / -1; }}
                 .action-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
                 .action-table th {{ background: {c_text}; color: white; padding: 10px; text-align: left; }}
                 .action-table td {{ padding: 10px; border-bottom: 1px solid #EEE; }}
+                .action-row {{ cursor: pointer; transition: background 0.2s; }}
+                .action-row:hover {{ background: #F5F5F5; }}
                 .prio-tag {{ padding: 3px 8px; border-radius: 15px; font-size: 10px; font-weight: bold; color: white; }}
                 .p-high {{ background: {c_neg}; }} .p-medium {{ background: {AZ['gold']}; }}
                 .risk-alert {{ background: #FFF0F0; border: 1px solid {c_neg}; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; }}
                 .risk-alert ul {{ margin: 5px 0 0 20px; padding: 0; }}
                 .brief {{ background: {c_text}; color: white; padding: 25px; border-radius: 10px; margin-top: 15px; border-left: 8px solid {c_pos}; }}
             </style>
+            <script>
+                function focusChart(id) {{
+                    document.querySelectorAll('.card').forEach(c => c.classList.remove('focused'));
+                    let el = document.getElementById(id);
+                    if (el) {{ el.classList.add('focused'); el.scrollIntoView({{behavior:'smooth', block:'center'}}); }}
+                }}
+            </script>
         </head><body>
             <div style="font-size: 24px; font-weight: 900; margin-bottom: 15px;">AstraZeneca Strategic Command (V7.2)</div>
             {risk_html}
@@ -1428,12 +1445,12 @@ class CashFlowAnalyzer:
                 <div class="metric-card" style="border-top-color:{c_pos}"><div class="m-label">Duplicate Recovery</div><div class="m-val">${dupe_val/1e6:.1f}M</div></div>
             </div>
             <div class="grid">
-                <div class="card">{figures_html[0]}</div>
-                <div class="card">{figures_html[1]}</div>
-                <div class="card">{figures_html[2]}</div>
-                <div class="card">{figures_html[3]}</div>
+                <div class="card" id="c0">{figures_html[0]}</div>
+                <div class="card" id="c1">{figures_html[1]}</div>
+                <div class="card" id="c2">{figures_html[2]}</div>
+                <div class="card" id="c3">{figures_html[3]}</div>
                 <div class="card full" style="padding:15px;">
-                    <div style="font-weight:bold;font-size:16px;margin-bottom:10px;">Executive Action Plan</div>
+                    <div style="font-weight:bold;font-size:16px;margin-bottom:10px;">Executive Action Plan (Click to navigate)</div>
                     {table_html}
                 </div>
                 <div class="brief full">
@@ -1441,6 +1458,7 @@ class CashFlowAnalyzer:
                     <div>Efficiency: {kpi_eff:.2f}x | Runway: ~{abs(total_in-total_out)/burn_rate/4:.1f} months | Duplicate Risk: ${dupe_val/1e6:.1f}M</div>
                     {outlook_html}
                 </div>
+
             </div>
         </body></html>
         """
