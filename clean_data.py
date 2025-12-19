@@ -45,19 +45,39 @@ def clean_and_export_data():
             # Merge to get Activity (Operating/Investing/Financing)
             df = pd.merge(df, df_link, left_on='Category_Clean', right_on='Category_Clean', how='left', suffixes=('', '_link'))
             
-            # Identify new column (Activity)
-            new_cols = [c for c in df.columns if c not in df_link.columns or c == 'Category_Clean']
-            potential_activity = [c for c in df.columns if c not in new_cols] # Columns solely from link
+            # --- 3a. CATEGORY MAPPING FIXES (Master the Cleaning) ---
+            print("Applying Advanced Category Logic...")
             
-            # Fallback logic to find the 'Activity' column if name varies
-            if 'Activity' in df.columns:
-                print("  • Activity column mapped.")
-            elif len(potential_activity) > 0:
-                # Assume the first new meaningful column is Activity
-                act_col = potential_activity[0] 
-                df['Activity'] = df[act_col]
-                print(f"  • Mapped Activity from column: {act_col}")
-        
+            # Identify columns from linkage
+            cat_cols = [c for c in df.columns if 'Category' in c and c not in ['Category', 'Category_Clean']]
+            activity_col = 'Activity' if 'Activity' in df.columns else None
+            
+            if not activity_col and len(cat_cols) > 0:
+                 # Use the mapped column (likely 'Category Names' or similar in Linkage) as Activity
+                 # Based on user hint, 'Non Netting AP' logic is needed.
+                 # Let's inspect potential activity columns
+                 top_col = cat_cols[0] 
+                 df['Activity'] = df[top_col]
+            
+            # RULE: "Non Netting AP" -> Operating Outflow (Manual Override)
+            mask_nn_ap = df['Category'].astype(str).str.contains("Non Netting AP", case=False, na=False)
+            if mask_nn_ap.any():
+                print(f"  • Fixing {mask_nn_ap.sum()} 'Non Netting AP' entries -> Operating")
+                # Fallback if Activity column is empty or mismatch
+                if 'Activity' in df.columns:
+                    df.loc[mask_nn_ap, 'Activity'] = 'Operating' # Simplification
+            
+            # RULE: "Other" Logic (Sign-based)
+            mask_other = df['Category'].astype(str).str.contains("Other", case=False, na=False)
+            if mask_other.any():
+                print(f"  • Logic check on {mask_other.sum()} 'Other' entries")
+                # Inflow if Amount > 0, Outflow if < 0. 
+                # Already handled by cash_flow_direction, but let's ensure Activity is valid
+                if 'Activity' in df.columns:
+                     # If mapped activity is missing for Other, fill it?
+                     # Usually 'Other' is Operating unless specified.
+                     df.loc[mask_other & df['Activity'].isna(), 'Activity'] = 'Operating'
+
         # 3b. Merge Country Mapping
         df_country = all_sheets.get('Others - Country Mapping')
         if df_country is not None:
@@ -86,16 +106,69 @@ def clean_and_export_data():
         df['is_weekend'] = df['posting_date'].dt.dayofweek.isin([5, 6])
         
         # B. Potential Duplicates (Same Amount, Date, Category - regardless of Docs)
-        # Marking instances that appear more than once
         subset_cols = ['Amount in USD', 'posting_date', 'Category']
         df['is_potential_duplicate'] = df.duplicated(subset=subset_cols, keep=False)
         
+        # C. CURRENCY CHECK (The "Korea Check")
+        # Load Exchange Rates to verify impact
+        df_fx = all_sheets.get('Others - Exchange Rate')
+        if df_fx is not None:
+             print("Performing Currency Impact Analysis...")
+             # Cleaning FX sheet (Header detection usually row 0, but check)
+             # Assumption: Columns are "Code" (Currency Code), "Rate (USD)"
+             # Main data has 'Curr.'
+             
+             if 'Code' in df_fx.columns and 'Rate (USD)' in df_fx.columns and 'Curr.' in df.columns:
+                 print("  • Merging Provided Exchange Rates (from Excel)...")
+                 # Rename for clarity before merge
+                 df_fx_clean = df_fx[['Code', 'Rate (USD)']].rename(columns={'Rate (USD)': 'Sheet_Rate_USD'})
+                 
+                 df = pd.merge(df, df_fx_clean, left_on='Curr.', right_on='Code', how='left')
+                 
+                 # Calculate Implied Rate from Data
+                 # Implied Rate = Amount USD / Amount Doc
+                 # Handle div/0
+                 df['implied_fx_rate'] = df.apply(lambda row: abs(row['Amount in USD'] / row['Amount in doc. curr.']) if row['Amount in doc. curr.'] != 0 else 0, axis=1)
+                 
+                 # Calculate Variance % (Official vs Implied)
+                 # If Implied < Official, implies devaluation or bad conversion?
+                 # Actually, usually 'Amount in USD' IS calculated by 'Rate (USD)' in the source.
+                 # This check verifies if the SOURCE system used the SAME rate as the provided TABLE.
+                 df['fx_rate_variance'] = df['implied_fx_rate'] - df['Sheet_Rate_USD']
+                 
+                 print("  • Calculated 'fx_rate_variance' for General Currency Volatility Analysis")
+             else:
+                 print("  • Warning: Could not map Exchange Rate columns (Missing 'Code' or 'Rate (USD)').")
+
+        # 6b. TIME SERIES FEATURES (ESS Ready)
+        print("Adding Time Series Intelligence...")
+        if 'posting_date' in df.columns:
+            df['Year'] = df['posting_date'].dt.year
+            df['Quarter'] = df['posting_date'].dt.quarter
+            df['Month'] = df['posting_date'].dt.month
+            df['Week_Num'] = df['posting_date'].dt.isocalendar().week
+            # Create a clean 'YYYY-WW' string for categorical sorting
+            df['Fiscal_Week'] = df['Year'].astype(str) + "-W" + df['Week_Num'].astype(str).str.zfill(2)
+        
+        # 6c. NET AMOUNT STANDARDIZATION
+        # Ensure we have a clear 'Net_Amount_USD' signed column for summation
+        # (Handling cases where Amount in USD might be positive only - though usually it tracks Doc Curr sign)
+        # Trusting Doc Curr Sign as source of truth
+        if 'Amount in doc. curr.' in df.columns and 'Amount in USD' in df.columns:
+             # Force sign consistency
+             df['Net_Amount_USD'] = np.where(df['Amount in doc. curr.'] < 0, 
+                                             -1 * df['Amount in USD'].abs(), 
+                                             df['Amount in USD'].abs())
+
         # 7. Export
         print(f"\nSaving processed data to: {output_path}")
         export_cols = [c for c in df.columns if c in [
-            'Name', 'Country', 'DocumentNo', 'posting_date', 'week', 'Category', 
-            'Activity', 'Amount in doc. curr.', 'Amount in USD', 
-            'cash_flow_direction', 'is_weekend', 'is_potential_duplicate'
+            'Name', 'Country', 'DocumentNo', 'posting_date', 'week', 
+            'Year', 'Quarter', 'Month', 'Fiscal_Week',
+            'Category', 'Activity', 
+            'Amount in doc. curr.', 'Amount in USD', 'Net_Amount_USD',
+            'cash_flow_direction', 'is_weekend', 'is_potential_duplicate',
+            'Curr.', 'implied_fx_rate', 'Sheet_Rate_USD', 'fx_rate_variance'
         ]]
         
         # If Activity missing, export what we have
