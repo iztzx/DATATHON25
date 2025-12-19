@@ -1265,10 +1265,10 @@ class CashFlowAnalyzer:
 
     def generate_interactive_dashboard(self):
         """
-        Generate Interactive Strategic Command Center (V7.2 - Visual Excellence).
+        Generate Interactive Strategic Command Center.
         Layout: Row1[Anomaly+Weekend | Geo Map] Row2[1M | 6M] + Actions + Brief.
         """
-        print("\n=== GENERATING STRATEGIC COMMAND CENTER (V7.2: VISUAL EXCELLENCE) ===")
+        print("\n=== GENERATING STRATEGIC COMMAND CENTER ===")
         
         opt_metrics = self.analyze_trapped_capital()
         risk_history = self.analyze_historical_roots()
@@ -1374,6 +1374,18 @@ class CashFlowAnalyzer:
         style_fig(f3, "6-Month Trajectory (Insights)")
         figures_html.append(pio.to_html(f3, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
+        # --- FIG 4: CATEGORY ANALYSIS (Inflow/Outflow Breakdown) ---
+        f4 = go.Figure()
+        if 'Category' in self.df.columns and 'Net_Amount_USD' in self.df.columns:
+            cat_flow = self.df.groupby('Category')['Net_Amount_USD'].sum().sort_values()
+            colors = [c_pos if v > 0 else c_neg for v in cat_flow.values]
+            f4.add_trace(go.Bar(y=cat_flow.index, x=cat_flow.values, orientation='h', marker_color=colors, text=[f"${v/1e6:.1f}M" for v in cat_flow.values], textposition='outside'))
+            f4.update_layout(xaxis_title="Net Cash Flow (USD)", yaxis_title="Category", showlegend=False)
+        style_fig(f4, "Category Analysis (Inflow/Outflow)")
+        f4.update_layout(height=500)  # Taller for category names
+        figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+
+
         # METRICS
         total_in = self.df[self.df['Amount in USD'] > 0]['Amount in USD'].sum()
         total_out = abs(self.df[self.df['Amount in USD'] < 0]['Amount in USD'].sum())
@@ -1404,9 +1416,9 @@ class CashFlowAnalyzer:
         for r in risk_6m: outlook_html += f"<li>{r}</li>"
         outlook_html += "</ul></div>"
 
-        # ASSEMBLE HTML V7.2
+        # ASSEMBLE HTML 
         html = f"""
-        <html><head><title>AZ Command V7.2</title>
+        <html><head><title>AZ Command</title>
             <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;700;900&display=swap" rel="stylesheet">
             <style>
                 body {{ background: {AZ['platinum']}; font-family: 'Figtree', sans-serif; margin: 0; padding: 20px; color: {c_text}; }}
@@ -1437,7 +1449,7 @@ class CashFlowAnalyzer:
                 }}
             </script>
         </head><body>
-            <div style="font-size: 24px; font-weight: 900; margin-bottom: 15px;">AstraZeneca Strategic Command (V7.2)</div>
+            <div style="font-size: 24px; font-weight: 900; margin-bottom: 15px;">AstraZeneca Strategic Command</div>
             {risk_html}
             <div class="top-metrics">
                 <div class="metric-card"><div class="m-label">Operating Efficiency</div><div class="m-val">{kpi_eff:.2f}x</div></div>
@@ -1449,6 +1461,8 @@ class CashFlowAnalyzer:
                 <div class="card" id="c1">{figures_html[1]}</div>
                 <div class="card" id="c2">{figures_html[2]}</div>
                 <div class="card" id="c3">{figures_html[3]}</div>
+                <div class="card full" id="c4">{figures_html[4]}</div>
+
                 <div class="card full" style="padding:15px;">
                     <div style="font-weight:bold;font-size:16px;margin-bottom:10px;">Executive Action Plan (Click to navigate)</div>
                     {table_html}
@@ -1463,7 +1477,7 @@ class CashFlowAnalyzer:
         </body></html>
         """
         with open('AstraZeneca_Interactive_Insights_CommandCenter.html', 'w', encoding='utf-8') as f: f.write(html)
-        print("Success: Strategic Command V7.2 Generated.")
+        print("Success: Strategic Command Generated.")
 
     def generate_insights(self):
         """Generate key insights and recommendations."""
