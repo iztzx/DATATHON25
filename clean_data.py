@@ -45,19 +45,26 @@ def clean_and_export_data():
             # Merge to get Activity (Operating/Investing/Financing)
             df = pd.merge(df, df_link, left_on='Category_Clean', right_on='Category_Clean', how='left', suffixes=('', '_link'))
             
-            # --- 3a. CATEGORY MAPPING FIXES (Master the Cleaning) ---
-            print("Applying Advanced Category Logic...")
+            # --- 3a. CATEGORY MAPPING (Inferred Activity) ---
+            print("Applying Rule-Based Activity Logic...")
             
-            # Identify columns from linkage
-            cat_cols = [c for c in df.columns if 'Category' in c and c not in ['Category', 'Category_Clean']]
-            activity_col = 'Activity' if 'Activity' in df.columns else None
+            # Default to Operating
+            df['Activity'] = 'Operating'
             
-            if not activity_col and len(cat_cols) > 0:
-                 # Use the mapped column (likely 'Category Names' or similar in Linkage) as Activity
-                 # Based on user hint, 'Non Netting AP' logic is needed.
-                 # Let's inspect potential activity columns
-                 top_col = cat_cols[0] 
-                 df['Activity'] = df[top_col].astype(object) # Force Object type
+            # Identify Column for Rules (Category or Category Names)
+            rule_col = 'Category' # Default
+            
+            # Define Keywords
+            investing_kw = ['Capex', 'Asset', 'Invest', 'Acquisition']
+            financing_kw = ['Intercompany', 'Dividend', 'Equity', 'Loan', 'Interest', 'Financing', 'Treasury']
+            
+            for keyword in investing_kw:
+                mask = df[rule_col].astype(str).str.contains(keyword, case=False, na=False)
+                df.loc[mask, 'Activity'] = 'Investing'
+                
+            for keyword in financing_kw:
+                mask = df[rule_col].astype(str).str.contains(keyword, case=False, na=False)
+                df.loc[mask, 'Activity'] = 'Financing'
             
             # RULE: "Non Netting AP" -> Operating Outflow (Manual Override)
             mask_nn_ap = df['Category'].astype(str).str.contains("Non Netting AP", case=False, na=False)

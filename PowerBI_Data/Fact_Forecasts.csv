@@ -1,0 +1,141 @@
+Forecast_Type,Model_Name,Date,Value_USD,Scenario,Horizon,Type
+Total Net Flow,Total Net Cash Flow,2025-11-09,757477.3155085819,Base Case,Short-Term (1M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-16,791827.040409577,Base Case,Short-Term (1M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-23,-696663.4231354805,Base Case,Short-Term (1M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-30,-873853.991387094,Base Case,Short-Term (1M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-09,-1274316.9941254845,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-16,850132.8906999142,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-23,1110941.5405691396,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-11-30,870003.4965836967,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-12-07,363091.6559923757,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-12-14,53106.6070267444,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-12-21,211578.0083550146,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2025-12-28,575247.3305077815,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-01-04,-1054628.5855865595,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-01-11,518462.2601984546,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-01-18,1142290.6614077264,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-01-25,-250981.60678456785,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-02-01,1361934.7550304658,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-02-08,349092.61224381445,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-02-15,599621.8850767605,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-02-22,-221785.07013962217,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-03-01,-119637.81784920648,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-03-08,288483.40795947344,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-03-15,543398.5477704818,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-03-22,214565.75426309288,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-03-29,604843.9493037269,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-04-05,308275.8641318772,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-04-12,313834.0949372476,Base Case,Medium-Term (6M),Forecast
+Total Net Flow,Total Net Cash Flow,2026-04-19,212277.6173568153,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-11-09,5164206.915862158,Base Case,Short-Term (1M),Forecast
+Activity: Operating,Operating,2025-11-16,8478033.070264729,Base Case,Short-Term (1M),Forecast
+Activity: Operating,Operating,2025-11-23,10336868.95285718,Base Case,Short-Term (1M),Forecast
+Activity: Operating,Operating,2025-11-30,12056215.913006192,Base Case,Short-Term (1M),Forecast
+Activity: Operating,Operating,2025-11-09,4546353.162968686,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-11-16,7339776.474132865,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-11-23,11414338.12151489,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-11-30,11632950.74688029,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-12-07,13703147.605632195,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-12-14,13490849.360922374,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-12-21,17875103.8790755,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2025-12-28,16753586.458265511,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-01-04,16963692.666369222,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-01-11,19274416.68030495,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-01-18,19179911.517820023,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-01-25,18855689.227404773,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-02-01,19932156.8339442,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-02-08,20233900.914641675,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-02-15,20308835.227336954,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-02-22,20214129.460206725,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-03-01,20856570.944657005,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-03-08,21259549.11344233,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-03-15,21030650.763287704,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-03-22,20539083.288957518,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-03-29,21161385.411446694,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-04-05,20787225.313856557,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-04-12,20714316.882530022,Base Case,Medium-Term (6M),Forecast
+Activity: Operating,Operating,2026-04-19,20525071.81221701,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-11-09,119145.65815190664,Base Case,Short-Term (1M),Forecast
+Activity: Financing,Financing,2025-11-16,60737.01397654405,Base Case,Short-Term (1M),Forecast
+Activity: Financing,Financing,2025-11-23,-266323.2271892995,Base Case,Short-Term (1M),Forecast
+Activity: Financing,Financing,2025-11-30,-594883.2327162775,Base Case,Short-Term (1M),Forecast
+Activity: Financing,Financing,2025-11-09,193907.156374882,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-11-16,-32279.199284238683,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-11-23,-333381.7124587579,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-11-30,-70010.6462521141,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-12-07,-262857.27854541154,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-12-14,-297879.6051122326,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-12-21,-167547.0415694874,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2025-12-28,-451302.49352614215,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-01-04,-544735.1489177896,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-01-11,-452087.3857149767,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-01-18,-164895.94399477929,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-01-25,-408424.3399218008,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-02-01,-234121.3092499128,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-02-08,-486685.6459111244,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-02-15,-497340.46895089466,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-02-22,-373628.6945336911,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-03-01,-518178.4419801568,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-03-08,-514940.7524924245,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-03-15,-422639.1204779636,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-03-22,-484871.3670283127,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-03-29,-483282.1957089857,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-04-05,-454156.5421043455,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-04-12,-460966.7740411785,Base Case,Medium-Term (6M),Forecast
+Activity: Financing,Financing,2026-04-19,-463511.0103478384,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-11-09,2618947.196258001,Base Case,Short-Term (1M),Forecast
+Category: AR,AR,2025-11-16,2232977.1700061453,Base Case,Short-Term (1M),Forecast
+Category: AR,AR,2025-11-23,1522367.8016657669,Base Case,Short-Term (1M),Forecast
+Category: AR,AR,2025-11-30,4963089.571148463,Base Case,Short-Term (1M),Forecast
+Category: AR,AR,2025-11-09,5725379.380338598,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-11-16,2119576.2497536447,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-11-23,3837976.977277603,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-11-30,2439237.9377225838,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-12-07,3273402.3916713446,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-12-14,3821561.306650224,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-12-21,3608797.8972633113,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2025-12-28,3603387.259147912,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-01-04,5358659.92900252,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-01-11,2915072.7287037345,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-01-18,3684882.145275869,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-01-25,3581094.271097056,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-02-01,3948620.104661933,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-02-08,4552904.647167807,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-02-15,4048542.1411606334,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-02-22,3893492.413740999,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-03-01,4038012.6877446105,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-03-08,4109406.0364236576,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-03-15,3618423.681556562,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-03-22,4241189.23558698,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-03-29,4516512.339988222,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-04-05,4082106.445487065,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-04-12,4098754.047333669,Base Case,Medium-Term (6M),Forecast
+Category: AR,AR,2026-04-19,4132508.631234269,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-11-09,-3154071.9312702683,Base Case,Short-Term (1M),Forecast
+Category: Netting AP,Netting AP,2025-11-16,-2513270.8122259188,Base Case,Short-Term (1M),Forecast
+Category: Netting AP,Netting AP,2025-11-23,-2633318.8505107597,Base Case,Short-Term (1M),Forecast
+Category: Netting AP,Netting AP,2025-11-30,-4910689.789615922,Base Case,Short-Term (1M),Forecast
+Category: Netting AP,Netting AP,2025-11-09,-2887592.407807249,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-11-16,-4263746.268078305,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-11-23,-5065726.771322025,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-11-30,-3703828.609803458,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-12-07,-4606679.293312059,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-12-14,-4333883.4520220375,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-12-21,-3864434.779211859,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2025-12-28,-4324821.355618878,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-01-04,-4118720.135702734,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-01-11,-4835722.783689229,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-01-18,-3873815.454405984,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-01-25,-4286927.412785718,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-02-01,-5022477.67239856,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-02-08,-4130122.860845437,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-02-15,-4618356.166434585,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-02-22,-4778594.701901171,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-03-01,-5027703.23834301,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-03-08,-4471758.84217141,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-03-15,-4954847.504653318,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-03-22,-4396169.742946002,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-03-29,-4672370.55390131,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-04-05,-4585421.964976139,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-04-12,-4613650.424167127,Base Case,Medium-Term (6M),Forecast
+Category: Netting AP,Netting AP,2026-04-19,-4636071.783515548,Base Case,Medium-Term (6M),Forecast
