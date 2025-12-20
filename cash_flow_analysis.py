@@ -1613,8 +1613,16 @@ class CashFlowAnalyzer:
             if 'spikes' in self.anomaly_metrics:
                 sx, sy = [x[0] for x in self.anomaly_metrics['spikes']], [x[1] for x in self.anomaly_metrics['spikes']]
                 f0.add_trace(go.Scatter(x=sx, y=sy, mode='markers', marker=dict(color=c_neg, size=10, line=dict(color='white', width=2)), name='Outlier'))
+                spike_dates = set(sx)
+            else:
+                spike_dates = set()
+                
         # Weekend Transactions Overlay
         wknd_data = self.df[self.df['posting_date'].dt.dayofweek >= 5].groupby('week')['Amount in USD'].sum()
+        
+        # FILTER: If a point is already an Outlier, do NOT show as Weekend (Outlier > Weekend)
+        wknd_data = wknd_data[~wknd_data.index.isin(spike_dates)]
+        
         if not wknd_data.empty:
             f0.add_trace(go.Scatter(x=wknd_data.index, y=wknd_data.values, mode='markers', marker=dict(color=AZ['gold'], size=8, symbol='diamond'), name='Weekend'))
         # Round Number Risk Overlay (>$100K exact multiples of $1K)
@@ -1850,6 +1858,18 @@ class CashFlowAnalyzer:
         if round_cnt > 0:
             actions.append((f"Round Numbers: ${round_val/1e6:.1f}M ({round_cnt} txns)", "Verify supporting docs", "Medium", "c0"))
 
+        # Weekend Risk: Transactions on Sat/Sun
+        wknd_mask = (self.df['posting_date'].dt.dayofweek >= 5)
+        wknd_cnt = wknd_mask.sum()
+        wknd_val = self.df.loc[wknd_mask, 'Amount in USD'].sum()
+        if wknd_cnt > 0:
+             actions.append((f"Weekend Activity: ${wknd_val/1e6:.1f}M ({wknd_cnt} txns)", "Check posting dates", "Medium", "c0"))
+
+        if hasattr(self, 'anomaly_metrics') and 'spikes' in self.anomaly_metrics:
+            for idx, val, desc in self.anomaly_metrics['spikes']:
+                date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx).split(' ')[0]
+                actions.append((f"Anomaly: ${val/1e6:.1f}M on {date_str}", "Investigate volume spike", "High", "c0"))
+
 
         # Add ALL forecast dips with RCA
         for r in risk_1m:
@@ -1857,7 +1877,15 @@ class CashFlowAnalyzer:
             parts = r.split('(')
             week_info = parts[0].strip() if parts else r
             cat_driver = parts[1].replace(')', '') if len(parts) > 1 else "Mixed"
+            week_info = parts[0].strip() if parts else r
+            cat_driver = parts[1].replace(')', '') if len(parts) > 1 else "Mixed"
             actions.append((week_info, f"Check {cat_driver} trends", "High", "c2"))
+        
+        # PRIORITIZE: High > Medium > Low
+        # Custom sort key: High=0, Medium=1, Low=2
+        prio_map = {'High': 0, 'Medium': 1, 'Low': 2}
+        actions.sort(key=lambda x: prio_map.get(x[2], 99))
+
         for issue, action, prio, target in actions:
             table_html += f"<tr class='action-row' onclick=\"focusChart('{target}')\"><td>{issue}</td><td>{action}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td><td>→</td></tr>"
         table_html += "</tbody></table>"
