@@ -923,7 +923,7 @@ class CashFlowAnalyzer:
         forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='W-MON')
         return pd.Series(predictions, index=forecast_dates), 0, 0
 
-    def _calculate_backtest_accuracy(self, series, model_type='xgboost', test_size=8):
+    def _calculate_backtest_accuracy(self, series, model_type='xgboost', test_size=12):
         """
         Calculate forecast accuracy using backtesting with XGBoost.
         Holds out last test_size points, trains on rest, evaluates.
@@ -1915,6 +1915,7 @@ class CashFlowAnalyzer:
         <html><head><title>AZ Command</title>
             <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;700;900&display=swap" rel="stylesheet">
             <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
             <script src="https://cdn.plot.ly/plotly-3.3.0.min.js"></script>
             <style>
                 body {{ background: {AZ['platinum']}; font-family: 'Figtree', sans-serif; margin: 0; padding: 20px; color: {c_text}; }}
@@ -1947,19 +1948,25 @@ class CashFlowAnalyzer:
                     let el = document.getElementById(id);
                     if (el) {{ el.classList.add('focused'); el.scrollIntoView({{behavior:'smooth', block:'center'}}); }}
                 }}
-                function exportToPng() {{
-                    html2canvas(document.body, {{scale: 2, backgroundColor: '{AZ['platinum']}'}}).then(canvas => {{
-                        let link = document.createElement('a');
-                        link.download = 'AZ_Dashboard_' + new Date().toISOString().split('T')[0] + '.png';
-                        link.href = canvas.toDataURL();
-                        link.click();
-                    }});
+                async function exportToPdf() {{
+                    const {{ jsPDF }} = window.jspdf;
+                    const canvas = await html2canvas(document.body, {{scale: 2, backgroundColor: '#EBEFEE', useCORS: true}});
+                    const imgData = canvas.toDataURL('image/png');
+                    
+                    const pdf = new jsPDF('l', 'mm', 'a4');
+                    const pdfWidth = pdf.internal.pageSize.getWidth();
+                    const pdfHeight = pdf.internal.pageSize.getHeight();
+                    const imgProps = pdf.getImageProperties(imgData);
+                    const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
+                    
+                    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, imgHeight);
+                    pdf.save('AstraZeneca_Strategic_Command_' + new Date().toISOString().split('T')[0] + '.pdf');
                 }}
             </script>
         </head><body id="dashboard-body">
             <div class="header-row">
                 <div style="font-size: 24px; font-weight: 900;">AstraZeneca Strategic Command</div>
-                <button class="export-btn" onclick="exportToPng()">📷 Export to Image</button>
+                <button class="export-btn" onclick="exportToPdf()">📄 Export to PDF</button>
             </div>
             {risk_html}
             <div class="top-metrics">
