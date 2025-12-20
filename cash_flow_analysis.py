@@ -1597,7 +1597,7 @@ class CashFlowAnalyzer:
         c_text, c_pos, c_neg = AZ['navy'], AZ['lime'], AZ['magenta']
         
         def style_fig(fig, title):
-            fig.update_layout(title_text=f"<b>{title}</b>", title_font=dict(size=16, color=c_text, family="Figtree"), paper_bgcolor='white', plot_bgcolor='white', font=dict(family="Figtree", color=c_text), margin=dict(l=15, r=15, t=50, b=15), height=380, legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
+            fig.update_layout(title_text=f"<b>{title}</b>", title_font=dict(size=16, color=c_text, family="Figtree, Segoe UI, sans-serif"), paper_bgcolor='white', plot_bgcolor='white', font=dict(family="Figtree, Segoe UI, sans-serif", color=c_text), margin=dict(l=15, r=15, t=50, b=15), height=380, legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
             fig.update_xaxes(showline=True, linecolor='#DDD', gridcolor='#F5F5F5')
             fig.update_yaxes(showline=True, linecolor='#DDD', gridcolor='#F5F5F5', tickformat='$.2s')
             return fig
@@ -1918,7 +1918,16 @@ class CashFlowAnalyzer:
             <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
             <script src="https://cdn.plot.ly/plotly-3.3.0.min.js"></script>
             <style>
-                body {{ background: {AZ['platinum']}; font-family: 'Figtree', sans-serif; margin: 0; padding: 20px; color: {c_text}; }}
+                body {{ background: {AZ['platinum']}; font-family: 'Figtree', 'Segoe UI', 'Arial', sans-serif; margin: 0; padding: 20px; color: {c_text}; }}
+                @media print {{
+                    @page {{ size: landscape; margin: 5mm; }}
+                    body {{ background: {AZ['platinum']} !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; zoom: 60%; height: 100vh; overflow: hidden; }}
+                    .export-btn {{ display: none !important; }}
+                    .header-row {{ margin-bottom: 5px; }}
+                    .metric-card {{ padding: 10px; border: 1px solid #DDD; }}
+                    .card {{ break-inside: avoid; page-break-inside: avoid; }}
+                    .action-table {{ font-size: 11px; }}
+                }}
                 .header-row {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
                 .export-btn {{ background: {AZ['navy']}; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.2s; }}
                 .export-btn:hover {{ background: {AZ['mulberry']}; transform: scale(1.02); }}
@@ -1948,19 +1957,8 @@ class CashFlowAnalyzer:
                     let el = document.getElementById(id);
                     if (el) {{ el.classList.add('focused'); el.scrollIntoView({{behavior:'smooth', block:'center'}}); }}
                 }}
-                async function exportToPdf() {{
-                    const {{ jsPDF }} = window.jspdf;
-                    const canvas = await html2canvas(document.body, {{scale: 2, backgroundColor: '#EBEFEE', useCORS: true}});
-                    const imgData = canvas.toDataURL('image/png');
-                    
-                    const pdf = new jsPDF('l', 'mm', 'a4');
-                    const pdfWidth = pdf.internal.pageSize.getWidth();
-                    const pdfHeight = pdf.internal.pageSize.getHeight();
-                    const imgProps = pdf.getImageProperties(imgData);
-                    const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
-                    
-                    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, imgHeight);
-                    pdf.save('AstraZeneca_Strategic_Command_' + new Date().toISOString().split('T')[0] + '.pdf');
+                function exportToPdf() {{
+                    window.print();
                 }}
             </script>
         </head><body id="dashboard-body">
