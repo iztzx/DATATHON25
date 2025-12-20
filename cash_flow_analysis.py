@@ -405,9 +405,9 @@ class CashFlowAnalyzer:
         weekly_totals = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
         print("Generating forecasts for Total Net Cash Flow...")
         
-        # 1a. 1-Month Forecast using ARIMA
-        print("  [1M] Using ARIMA for short-term forecast (4 weeks)...")
-        fc_1m, mae_1m, mape_1m = self._generate_arima_forecast(weekly_totals, steps=4)
+        # 1a. 1-Month Forecast using XGBoost (better accuracy than ARIMA for this data)
+        print("  [1M] Using XGBoost for short-term forecast (4 weeks)...")
+        fc_1m, mae_1m, mape_1m = self._generate_xgboost_forecast(weekly_totals, steps=4)
         
         # 1b. 6-Month Forecast using XGBoost (ML-based)
         print("  [6M] Using XGBoost for long-term forecast (24 weeks)...")
@@ -430,7 +430,7 @@ class CashFlowAnalyzer:
         # Store KPI summaries for dashboard
         self.forecast_metrics['1m_sum'] = fc_1m.sum() if not fc_1m.empty else 0
         self.forecast_metrics['6m_sum'] = fc_6m.sum() if not fc_6m.empty else 0
-        self.forecast_metrics['1m_model'] = 'ARIMA(2,1,2)'
+        self.forecast_metrics['1m_model'] = 'XGBoost' if HAS_XGBOOST else 'GradientBoosting'
         self.forecast_metrics['6m_model'] = 'XGBoost' if HAS_XGBOOST else 'GradientBoosting'
         self.forecast_metrics['1m_accuracy'] = mape_1m
         self.forecast_metrics['6m_accuracy'] = mape_6m
@@ -923,32 +923,68 @@ class CashFlowAnalyzer:
         forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='W-MON')
         return pd.Series(predictions, index=forecast_dates), 0, 0
 
-    def _calculate_backtest_accuracy(self, series, model_type='arima', test_size=8):
+    def _calculate_backtest_accuracy(self, series, model_type='xgboost', test_size=8):
         """
-        Calculate forecast accuracy using backtesting.
+        Calculate forecast accuracy using backtesting with XGBoost.
         Holds out last test_size points, trains on rest, evaluates.
         Returns (MAE, MAPE) and stores actual vs predicted for visualization.
         """
-        if len(series) < test_size + 10:
+        if len(series) < test_size + 12:
             return 0, 0
         
         train = series.iloc[:-test_size]
         test = series.iloc[-test_size:]
         
         try:
-            if model_type == 'arima':
-                model = ARIMA(train.values, order=(2, 1, 2))
-                fitted = model.fit()
-                predictions = fitted.forecast(steps=test_size)
+            # Build XGBoost model for backtesting
+            lookback = min(8, len(train) - 1)
+            
+            # Create lagged features
+            df_features = pd.DataFrame({'target': train.values})
+            for lag in range(1, lookback + 1):
+                df_features[f'lag_{lag}'] = df_features['target'].shift(lag)
+            df_features['week_num'] = range(len(df_features))
+            df_features['rolling_mean_4'] = df_features['target'].rolling(4).mean()
+            df_features['rolling_std_4'] = df_features['target'].rolling(4).std()
+            df_features = df_features.dropna()
+            
+            X_train = df_features.drop('target', axis=1).values
+            y_train = df_features['target'].values
+            
+            # Fit model
+            if HAS_XGBOOST:
+                model = XGBRegressor(n_estimators=100, max_depth=4, learning_rate=0.1, random_state=42, verbosity=0)
             else:
-                # Simple fallback for LSTM backtest
-                predictions = [train.iloc[-1]] * test_size
+                model = GradientBoostingRegressor(n_estimators=100, max_depth=4, learning_rate=0.1, random_state=42)
+            model.fit(X_train, y_train)
+            
+            # Predict on test period
+            predictions = []
+            last_values = list(train.values[-lookback:])
+            current_week = len(train)
+            rolling_vals = list(train.values[-4:])
+            
+            for i in range(test_size):
+                features = last_values[-lookback:][::-1]
+                features.append(current_week + i)
+                features.append(np.mean(rolling_vals))
+                features.append(np.std(rolling_vals) if len(rolling_vals) > 1 else 0)
+                
+                pred = model.predict([features])[0]
+                predictions.append(pred)
+                
+                # Use actual test value for next prediction (rolling forecast)
+                actual_val = test.iloc[i] if i < len(test) else pred
+                last_values.append(actual_val)
+                rolling_vals.append(actual_val)
+                if len(rolling_vals) > 4:
+                    rolling_vals.pop(0)
             
             # Store for visualization
             if not hasattr(self, 'backtest_results'):
                 self.backtest_results = {}
             
-            self.backtest_results[model_type] = {
+            self.backtest_results['xgboost'] = {
                 'actual': test,
                 'predicted': pd.Series(predictions, index=test.index),
                 'dates': test.index
@@ -964,6 +1000,7 @@ class CashFlowAnalyzer:
             return mae, mape
             
         except Exception as e:
+            print(f"  ⚠ Backtest error: {e}")
             return 0, 0
 
     def detect_anomalies(self):
@@ -1719,8 +1756,8 @@ class CashFlowAnalyzer:
 
         # --- FIG 5: FORECAST ACCURACY (Actual vs Predicted) ---
         f5 = go.Figure()
-        if hasattr(self, 'backtest_results') and 'arima' in self.backtest_results:
-            bt = self.backtest_results['arima']
+        if hasattr(self, 'backtest_results') and 'xgboost' in self.backtest_results:
+            bt = self.backtest_results['xgboost']
             actuals = bt['actual']
             preds = bt['predicted']
             
@@ -1738,7 +1775,7 @@ class CashFlowAnalyzer:
             f5.add_trace(go.Scatter(
                 x=preds.index, 
                 y=preds.values, 
-                name="Predicted (ARIMA)", 
+                name="Predicted (XGBoost)", 
                 line=dict(color=c_pos, width=2, dash='dash'),
                 mode='lines+markers',
                 marker=dict(size=6, symbol='diamond')
@@ -1749,7 +1786,7 @@ class CashFlowAnalyzer:
                 mape = self.forecast_metrics.get('1m_accuracy', 0)
                 f5.add_annotation(
                     x=0.02, y=0.98, xref="paper", yref="paper",
-                    text=f"<b>Model Accuracy: {100-mape:.1f}%</b><br>MAPE: {mape:.1f}%",
+                    text=f"<b>XGBoost Backtest</b><br>MAPE: {mape:.1f}%",
                     showarrow=False, font=dict(size=12, color=c_text),
                     bgcolor="rgba(255,255,255,0.9)", bordercolor=c_pos, borderwidth=2,
                     align="left"

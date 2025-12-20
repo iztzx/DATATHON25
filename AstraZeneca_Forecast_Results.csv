@@ -1,8 +1,8 @@
 Forecast_Type,Model_Name,Date,Value_USD,Scenario,Horizon
-Total Net Flow,Total Net Cash Flow,2025-11-03,-4320304.123833069,Base Case,Short-Term (1M)
-Total Net Flow,Total Net Cash Flow,2025-11-10,2399652.0095833233,Base Case,Short-Term (1M)
-Total Net Flow,Total Net Cash Flow,2025-11-17,-1884649.9855020111,Base Case,Short-Term (1M)
-Total Net Flow,Total Net Cash Flow,2025-11-24,1120592.569303297,Base Case,Short-Term (1M)
+Total Net Flow,Total Net Cash Flow,2025-11-03,379746.5,Base Case,Short-Term (1M)
+Total Net Flow,Total Net Cash Flow,2025-11-10,-154152.375,Base Case,Short-Term (1M)
+Total Net Flow,Total Net Cash Flow,2025-11-17,-4380961.0,Base Case,Short-Term (1M)
+Total Net Flow,Total Net Cash Flow,2025-11-24,6055416.0,Base Case,Short-Term (1M)
 Total Net Flow,Total Net Cash Flow,2025-11-03,379746.5,Base Case,Medium-Term (6M)
 Total Net Flow,Total Net Cash Flow,2025-11-10,-154152.375,Base Case,Medium-Term (6M)
 Total Net Flow,Total Net Cash Flow,2025-11-17,-4380961.0,Base Case,Medium-Term (6M)
