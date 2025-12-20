@@ -432,8 +432,8 @@ class CashFlowAnalyzer:
         self.forecast_metrics['6m_sum'] = fc_6m.sum() if not fc_6m.empty else 0
         self.forecast_metrics['1m_model'] = 'XGBoost' if HAS_XGBOOST else 'GradientBoosting'
         self.forecast_metrics['6m_model'] = 'XGBoost' if HAS_XGBOOST else 'GradientBoosting'
-        self.forecast_metrics['1m_accuracy'] = mape_1m
-        self.forecast_metrics['6m_accuracy'] = mape_6m
+        self.forecast_metrics['1m_r2'] = mape_1m  # Now R² instead of MAPE
+        self.forecast_metrics['6m_r2'] = mape_6m  # Now R² instead of MAPE
         
         # Backward compatibility
         self.forecasts['historical'] = weekly_totals
@@ -889,11 +889,11 @@ class CashFlowAnalyzer:
             forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='W-MON')
             forecast_series = pd.Series(predictions, index=forecast_dates)
             
-            # Calculate accuracy via backtest
-            mae, mape = self._calculate_backtest_accuracy(series, model_type='xgboost')
+            # Calculate accuracy via backtest (returns MAE and R² now)
+            mae, r_squared = self._calculate_backtest_accuracy(series, model_type='xgboost')
             
-            print(f"  ✓ {model_name} fitted. MAE: ${mae/1e6:.2f}M, MAPE: {mape:.1f}%")
-            return forecast_series, mae, mape
+            print(f"  ✓ {model_name} fitted. MAE: ${mae/1e6:.2f}M, R²: {r_squared:.2f}")
+            return forecast_series, mae, r_squared
             
         except Exception as e:
             print(f"  ⚠ XGBoost failed ({e}), using fallback...")
@@ -990,14 +990,33 @@ class CashFlowAnalyzer:
                 'dates': test.index
             }
             
-            # Calculate metrics
+            # Calculate metrics (better alternatives to MAPE for cash flow)
             actuals = test.values
             preds = np.array(predictions)
             
+            # MAE - Absolute error in dollars
             mae = np.mean(np.abs(actuals - preds))
-            mape = np.mean(np.abs((actuals - preds) / (actuals + 1e-10))) * 100
             
-            return mae, mape
+            # R² (Coefficient of Determination) - How well model explains variance
+            ss_res = np.sum((actuals - preds) ** 2)
+            ss_tot = np.sum((actuals - np.mean(actuals)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+            r_squared = max(0, r_squared)  # Cap at 0 for display
+            
+            # Directional Accuracy - % of correct up/down predictions
+            actual_direction = np.sign(np.diff(actuals))
+            pred_direction = np.sign(np.diff(preds))
+            directional_acc = np.mean(actual_direction == pred_direction) * 100 if len(actual_direction) > 0 else 0
+            
+            # Correlation
+            correlation = np.corrcoef(actuals, preds)[0, 1] if len(actuals) > 1 else 0
+            
+            # Store all metrics
+            self.backtest_results['xgboost']['r_squared'] = r_squared
+            self.backtest_results['xgboost']['directional_acc'] = directional_acc
+            self.backtest_results['xgboost']['correlation'] = correlation
+            
+            return mae, r_squared  # Return R² instead of MAPE
             
         except Exception as e:
             print(f"  ⚠ Backtest error: {e}")
@@ -1781,13 +1800,16 @@ class CashFlowAnalyzer:
                 marker=dict(size=6, symbol='diamond')
             ))
             
-            # Add accuracy annotation
-            if hasattr(self, 'forecast_metrics'):
-                mape = self.forecast_metrics.get('1m_accuracy', 0)
+            # Add accuracy annotation with better metrics
+            if hasattr(self, 'backtest_results') and 'xgboost' in self.backtest_results:
+                bt = self.backtest_results['xgboost']
+                r2 = bt.get('r_squared', 0)
+                dir_acc = bt.get('directional_acc', 0)
+                corr = bt.get('correlation', 0)
                 f5.add_annotation(
                     x=0.02, y=0.98, xref="paper", yref="paper",
-                    text=f"<b>XGBoost Backtest</b><br>MAPE: {mape:.1f}%",
-                    showarrow=False, font=dict(size=12, color=c_text),
+                    text=f"<b>XGBoost Backtest</b><br>R²: {r2:.2f} | Dir Acc: {dir_acc:.0f}%<br>Correlation: {corr:.2f}",
+                    showarrow=False, font=dict(size=11, color=c_text),
                     bgcolor="rgba(255,255,255,0.9)", bordercolor=c_pos, borderwidth=2,
                     align="left"
                 )
