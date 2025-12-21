@@ -1,172 +1,102 @@
-# AstraZeneca Cash Flow Analysis
-## Datathon Presentation Structure
+# Datathon 2025: Winning Presentation Structure (10 Slides Max)
+
+**Objective:** Secure "Exceptional" scores (17-20 points) in all categories by demonstrating deep critical thinking, innovative visualization, technical mastery, and transformative recommendations.
+
+**Format:** PDF, Landscape, 16:9 Aspect Ratio.
+**Length:** Strictly 10 Pages (Cover + 9 Content Slides).
 
 ---
 
-# Slide 1: Title Slide
-**AstraZeneca APAC Cash Flow Intelligence**
+## Slide 1: Title & Vision
+**Goal:** Professional first impression.
+*   **Big Title:** Datathon 2025: Cash Flow Intelligence & Strategic Volatility Management
+*   **Subtitle:** Hybrid Ensemble Forecasting, Deep Anomaly Detection, and Actionable Treasury Insights.
+*   **Team Name:** [Random Forest]
+*   **Visual:** A subtle, high-quality background graphic hinting at data flow or financial stability (AstraZeneca branding colors).
 
-- Team Name: [Your Team]
-- Datathon 2024
-- Date: December 2024
+## Slide 2: Executive Summary (The "Hook")
+**Goal:** Tell the whole story in 30 seconds.
+*   **The Challenge:** Managing multi-entity cash flow visibility amidst market volatility and billing complexities.
+*   **Our Solution:** A "Cash Flow Command Center" leveraging a **Hybrid Ensemble Model (Prophet + XGBoost/RF)** for predictions and **Isolation Forests** for anomaly detection.
+*   **Key Impact:**
+    *   **Accuracy:** Robust short-term (1-month) and medium-term (6-month) forecasts.
+    *   **Risk Mitigation:** Automatically flagged top 1% volume anomalies ($X value detected).
+    *   **Strategic Value:** Unlocked actionable insights for short-term liquidity and long-term sustainability.
 
----
+## Slide 3: Problem Statement & Strategic Context (Data Storytelling: 30%)
+**Goal:** Demonstrate "Exceptional" deep critical thinking. Connect to larger financial contexts.
+*   **Headline:** The Cost of Volatility: From Reactive to Proactive Treasury.
+*   **Content:**
+    *   Identify the core friction: "Static reporting fails to capture the dynamic nature of global billing cycles and volatility thresholds."
+    *   **The "Why":** Explain *implications*—poor visibility leads to inefficient capital allocation and liquidity risk.
+    *   **Strategic Alignment:** Map our objectives (Forecast, Detect, Analyze) directly to AstraZeneca's goal of financial robustness.
+*   **Visual:** A conceptual diagram connecting "Raw Data Chaos" to "Strategic Clarity."
 
-# Slide 2: Problem Statement
+## Slide 4: Data Engineering & Technical Architecture (Technical: 40%)
+**Goal:** Show "Exceptional" attention to detail and innovative preprocessing (Ref: `clean_data.py`).
+*   **Headline:** Robust Data Pipeline & Feature Engineering.
+*   **Key Technical Highlights:**
+    *   **Preprocessing:** Strict fiscal week alignment (`%Y-%U`), standardized date parsing, and missing value handling for Multi-Entity consistency.
+    *   **Feature Engineering:**
+        *   **Time-Series Lags:** Generated Lag-1 to Lag-12 features to capture weekly seasonality.
+        *   **Rolling Statistics:** Implemented Rolling Mean (4-week) and Rolling Std Dev (4-week) to smooth variance and capture recent trends.
+    *   **Transformation:** Conversion of all amounts to standardized **Amount_USD** for global aggregation.
+*   **Visual:** A clean, professional "Data Pipeline" flowchart (Source $\rightarrow$ Transform/Lag Generation $\rightarrow$ Ensemble Model $\rightarrow$ Dashboard).
 
-**Challenge:**
-> Analyze APAC cash flow data to predict weekly net cash flow for 1-6 months and identify anomalies requiring business review.
+## Slide 5: Market Dynamics & Volatility Analysis (Visualization: 30%)
+**Goal:** "Highly innovative and impactful visualizations connecting multiple aspects."
+*   **Headline:** Deciphering Volatility: Trends & Factor Impact.
+*   **Visual Focus (CRITICAL):**
+    *   **Market Trend Overlay:** Visualizing `Amount_USD` movement over `Fiscal_Week` with volatility bands.
+    *   **Insight:** Use callouts to highlight specific "Volatility Clusters"—periods of high instability detected by rolling standard deviation spikes.
+    *   **Correlation Matrix:** A heatmap showing how specific `Category` flows correlate with `Net Cash Position`.
 
-**Key Deliverables:**
-1. Weekly cash flow forecasting (1M & 6M)
-2. Anomaly detection for irregularities
-3. Category-based cash flow analysis
+## Slide 6: Forecasting Engine: 1-Month & 6-Month (Technical: 40%)
+**Goal:** "Cutting-edge technical solutions" and "Advanced techniques" (Ref: `cash_flow_analysis.py`).
+*   **Headline:** Precision Forecasting: Hybrid Ensemble Approach.
+*   **Methodology:**
+    *   **Component 1 (Seasonality):** **Facebook Prophet** (`weekly_seasonality=True`, `yearly_seasonality=True`) to capture core cyclical patterns.
+    *   **Component 2 (Non-Linear Dynamics):** **XGBoost (n=100, lr=0.05)** & **Random Forest (n=100)** to capture complex non-linear relationships and interactions.
+    *   **Consolidation:** Weighted ensemble forecast for superior robustness.
+*   **Execution:**
+    *   **1-Month Horizon:** Tactical, high-precision liquidity view.
+    *   **6-Month Horizon:** Strategic trend analysis using recursive multi-step forecasting.
+*   **Validation:** RMSE and MAPE metrics presented for train/test splits.
 
----
+## Slide 7: Factor Analysis & Trading Insights (Visualization: 30%)
+**Goal:** "Mastery of visualization tools and storytelling."
+*   **Headline:** Actionable Drivers: Efficiency Gap & Burn Analysis.
+*   **Visual Focus (CRITICAL):**
+    *   **Efficiency Gap Chart:** Filled area chart highlighting the surplus/deficit between "Cash In" vs "Cash Out" (Green/Red regions).
+    *   **Burn vs Budget:** Line/Bar combo comparing actual burn rate vs projected budget thresholds.
+*   **Insight:** "Category [X] accounts for Y% of monthly variance, signaling a need for renegotiated payment terms."
 
-# Slide 3: Data Overview
+## Slide 8: Anomaly Detection & Risk Signals (Technical: 40%)
+**Goal:** "Identify irregularities cashflow activities that requires business review."
+*   **Headline:** Automated Risk Sentinel: Isolation Forest.
+*   **Technique:** **Isolation Forest Algorithm** (`contamination=0.01`).
+    *   Unsupervised learning to detect outliers in high-dimensional space without labeled data.
+*   **Showcase:**
+    *   **Scatter Plot:** "Normal" transactions (Blue) vs "Anomalies" (Red) based on `Amount_USD` and frequency.
+    *   **Red Flag Reporting:** Alerting on specific outliers (e.g., single transactions > 3 $\sigma$ from mean).
+*   **Triage Protocol:** Automated flagging $\rightarrow$ Finance Analyst Review $\rightarrow$ Investigation.
 
-**Dataset:** 84,528 transactions across 8 APAC entities
+## Slide 9: Strategic Recommendations (Recommendation: 20%)
+**Goal:** "Transformative recommendations defining strategies."
+*   **Headline:** From Insight to Impact: Optimizing Liquidity.
+*   **Recommendation 1 (Liquidity):** "Leverage 1-Month Prophet forecasts to optimize heavy AP runs during projected surplus weeks."
+*   **Recommendation 2 (Operations):** "Investigate anomalies flagged by Isolation Forest in the 'Other' category to plug leakage."
+*   **Recommendation 3 (Strategic):** "Adopt the 6-Month Hybrid Forecast as the baseline for medium-term treasury hedging strategies."
 
-| Entity | Country | Transactions |
-|--------|---------|--------------|
-| TW10 | Taiwan | ~15K |
-| PH10 | Philippines | ~12K |
-| TH10 | Thailand | ~10K |
-| MY10 | Malaysia | ~10K |
-| ID10 | Indonesia | ~9K |
-| VN20 | Vietnam | ~8K |
-| KR10 | South Korea | ~7K |
-| SS10 | Singapore | ~5K |
-
-**Time Range:** 52 weeks of transaction data
-
----
-
-# Slide 4: Methodology
-
-```mermaid
-flowchart LR
-    A[Raw Data] --> B[Data Cleaning]
-    B --> C[Preprocessing]
-    C --> D1[Forecasting]
-    C --> D2[Anomaly Detection]
-    C --> D3[Category Analysis]
-    D1 --> E[Dashboard]
-    D2 --> E
-    D3 --> E
-```
-
-**Techniques Used:**
-- **Forecasting:** Holt-Winters Exponential Smoothing with damping
-- **Anomaly Detection:** 2-Sigma statistical boundaries + rule-based flags
-- **Data Pipeline:** Python (Pandas, NumPy, Plotly)
-
----
-
-# Slide 5: Forecasting Solution
-
-**1-Month Forecast (4 weeks):**
-- Uses last 8 weeks of actual week-to-week changes
-- Projects forward using historical patterns
-
-**6-Month Forecast (24 weeks):**
-- Damped trend (converges over time)
-- Realistic variation using historical volatility (seeded for reproducibility)
-
-**Dip Detection:**
-- Threshold: <70% of historical average
-- RCA: Top 3 category drivers shown on hover
-
-*[Include screenshot of 1M/6M charts]*
-
----
-
-# Slide 6: Anomaly Detection
-
-**Types Detected:**
-
-| Anomaly Type | Detection Logic | Priority |
-|--------------|-----------------|----------|
-| **Duplicates** | Same Amount + Date + Vendor | High |
-| **Round Numbers** | ≥$100K exact multiples of $1K | Medium |
-| **Volume Spikes** | Z-score > 2σ | High |
-
-**Key Findings:**
-- $X.XM in potential duplicate payments
-- N transactions flagged as round number risk
-- N volume spikes detected
-
-*[Include screenshot of Anomaly chart with markers]*
+## Slide 10: Conclusion & Future Roadmap
+**Goal:** Leave a lasting impression of "Exceptional" value.
+*   **Summary:** We delivered clarity via **Ensemble Forecasting**, accuracy via **Feature Engineering**, and protection via **Isolation Forest Anomaly Detection**.
+*   **The Future (Scalability):**
+    *   Integration with real-time banking APIs.
+    *   Automated causal analysis using GenAI summaries.
+*   **Final Call to Action:** "Empowering AstraZeneca to trade volatility for stability with AI-driven intelligence."
+*   **Contact/Team Info.**
 
 ---
 
-# Slide 7: Category Analysis
-
-**Cash Flow by Category:**
-
-| Top Outflows | Top Inflows |
-|--------------|-------------|
-| Non Netting AP | Intercompany |
-| Treasury | Loan Receipt |
-| Operating | Other |
-
-**Key Insight:** Operating activities dominate cash outflows
-
-*[Include screenshot of Category horizontal bar chart]*
-
----
-
-# Slide 8: Interactive Dashboard
-
-**Command Center Features:**
-- Real-time drill-down by entity
-- Clickable action plan linking to charts
-- Geo bubble map showing:
-  - 🟢 Net Profit (positive cash flow)
-  - 🔴 Net Deficit (negative cash flow)
-  - 🟡 Duplicate Risk
-
-*[Include screenshot of full dashboard]*
-
----
-
-# Slide 9: Key Recommendations
-
-**Executive Action Plan:**
-
-| Issue | Action | Priority |
-|-------|--------|----------|
-| Duplicates: $X.XM | Audit vendor invoices | High |
-| Round Numbers: $X.XM | Verify supporting docs | Medium |
-| Week X Dip | Check [Category] trends | High |
-
-**Strategic Metrics:**
-- Operating Efficiency: 0.96x
-- Weekly Burn Rate: $XXM
-- Duplicate Recovery Potential: $X.XM
-
----
-
-# Slide 10: Conclusion & Next Steps
-
-**Achievements:**
-✅ Built predictive forecasting for 1M & 6M horizons
-✅ Implemented multi-layer anomaly detection
-✅ Created interactive command center dashboard
-
-**Future Enhancements:**
-1. Entity-level forecasts visualization
-2. FX impact analysis (currency volatility)
-3. Automated alert system for forecast dips
-
-**Thank You!**
-
----
-
-## Notes for Presenters
-
-- Replace [X.XM] with actual values from your run
-- Include actual screenshots from the dashboard
-- Customize team name and participant names
-- Total: 10 slides as required
+**Note:** Ensure all charts use the **AstraZeneca color palette** (or a professional, complementary scheme) and are readable when exported to PDF.
