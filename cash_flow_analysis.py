@@ -1371,17 +1371,19 @@ class CashFlowAnalyzer:
             plt.style.use('ggplot')
             
         # STRICT AZ BRAND COLORS (From Image)
+        # STRICT AZ BRAND COLORS (Phase 17 Palette)
         AZ_COLORS = {
             'magenta': '#D0006F',       # Primary 1
-            'mulberry': '#830051',      # Primary 2
-            'lime_green': '#C4D600',    # Primary 3
-            'gold': '#F0AB00',          # Primary 4 (Darkened for readability)
+            'mulberry': '#830051',      # Primary 2 (Main Anomaly)
+            'lime_green': '#C4D600',    # Primary 3 (Surplus)
+            'gold': '#F0AB00',          # Primary 4 (Round/Warn)
             'navy': '#003865',          # Text / Strong Elements
             'platinum': '#EBEFEE',      # Background Light
-            'off_white': '#F8F8F8',     # Background Lighter
+            'off_white': '#FFFFFF',     # Background Lighter
             'graphite': '#3F4444',      # Text Secondary
-            'support_blue': '#68D2DF',  # Supporting Cyan
-            'rich_green': '#006F3D'     # Darker Green for positive distinctness
+            'support_blue': '#68D2DF',  # Supporting Cyan (Duplicate)
+            'rich_green': '#006F3D',    # Darker Green
+            'purple': '#3C1053'         # Forecast Confidence
         }
         
         # 3 Rows x 2 Columns Layout
@@ -1586,9 +1588,11 @@ class CashFlowAnalyzer:
         # --- P5: ANOMALY RISK - MONTHLY VALUE BAR (Bottom Left) ---
         # 5. VOLATILITY/RISK (Monthly Bar)
         style_card(ax5, "5. Value at Risk (Monthly Anomaly Sum)")
+        risk_monthly = pd.Series([0])
         if self.anomalies is not None and not self.anomalies.empty:
             # Aggregate by Month
             risk_monthly = self.anomalies.set_index('posting_date').resample('M')['Amount in USD'].sum().abs()
+
             
             # Plot Bar Chart
             bars = ax5.bar(risk_monthly.index, risk_monthly.values, width=20, color=AZ_COLORS['magenta'], alpha=0.7)
@@ -1668,12 +1672,23 @@ class CashFlowAnalyzer:
         Generate Interactive Strategic Command Center.
         Layout: Row1[Anomaly+Weekend | Geo Map] Row2[1M | 6M] + Actions + Brief.
         """
-        print("\n=== GENERATING STRATEGIC COMMAND CENTER ===")
+
+        print("\n=== GENERATING INTERACTIVE COMMAND CENTER (HTML) ===")
         
         opt_metrics = self.analyze_trapped_capital()
         risk_history = self.analyze_historical_roots()
         
-        AZ = {'magenta': '#D0006F', 'mulberry': '#830051', 'lime': '#C4D600', 'navy': '#003865', 'platinum': '#EBEFEE', 'blue': '#68D2DF', 'gold': '#F0AB00', 'purple': '#3C1053'}
+        AZ = {
+            'mulberry': '#830051',  # Main Anomaly
+            'lime': '#C4D600',      # Surplus/Good
+            'navy': '#003865',      # Trend/Corp
+            'graphite': '#3F4444',  # Grid/Text
+            'blue': '#68D2DF',      # Duplicate (Light Blue)
+            'magenta': '#D0006F',   # High Severity
+            'purple': '#3C1053',    # Forecast/Model
+            'gold': '#F0AB00',      # Round/Warn
+            'platinum': '#EBEFEE'
+        }
         c_text, c_pos, c_neg = AZ['navy'], AZ['lime'], AZ['magenta']
         
         def style_fig(fig, title):
@@ -1694,302 +1709,330 @@ class CashFlowAnalyzer:
         # --- FIG 0: ENHANCED TIMELINE - CASH FLOW & RISK ANALYSIS ---
         f0 = go.Figure()
         
-        # Prepare MONTHLY data for clarity (not weekly - too cluttered)
-        if self.weekly_data is not None:
-            # Aggregate to monthly
-            df_monthly = self.df.copy()
-            df_monthly['month'] = pd.to_datetime(df_monthly['posting_date']).dt.to_period('M')
-            monthly_data = df_monthly.groupby('month').agg({
-                'Amount in USD': lambda x: x.sum()
-            }).reset_index()
-            monthly_data.columns = ['month', 'monthly_amount_usd']
-            monthly_data['month_start'] = monthly_data['month'].dt.start_time
-            monthly_data['month_num'] = range(1, len(monthly_data) + 1)
-            monthly_data['month_label'] = [m.strftime('%b %y') for m in monthly_data['month']]
-            
-            # 1. NET CASH FLOW LINE (Primary focus)
-            f0.add_trace(go.Scatter(
-                x=monthly_data['month_label'],
-                y=monthly_data['monthly_amount_usd'],
-                mode='lines+markers',
-                name='Net Cash Flow',
-                line=dict(color=AZ['navy'], width=4),
-                marker=dict(size=12, color=AZ['navy']),
-                hovertemplate='<b>%{x}</b><br>Net Flow: $%{y:,.0f}<extra></extra>',
-                yaxis='y'
-            ))
-            
-            # 2. INFLOW/OUTFLOW CONTEXT (Secondary - lighter)
-            monthly_flows = df_monthly.groupby('month').agg({
-                'Amount in USD': [lambda x: x[x > 0].sum(), lambda x: abs(x[x < 0].sum())]
-            }).reset_index()
-            monthly_flows.columns = ['month', 'inflow', 'outflow']
-            monthly_flows = monthly_data.merge(monthly_flows, on='month', how='left').fillna(0)
-            
-            f0.add_trace(go.Bar(
-                x=monthly_data['month_label'],
-                y=monthly_flows['inflow'],
-                name='Total Inflow',
-                marker_color='rgba(196, 214, 0, 0.3)',
-                hovertemplate='<b>%{x}</b><br>Inflow: $%{y:,.0f}<extra></extra>',
-                yaxis='y2',
-                showlegend=True
-            ))
-            
-            f0.add_trace(go.Bar(
-                x=monthly_data['month_label'],
-                y=monthly_flows['outflow'],
-                name='Total Outflow',
-                marker_color='rgba(208, 0, 111, 0.3)',
-                hovertemplate='<b>%{x}</b><br>Outflow: $%{y:,.0f}<extra></extra>',
-                yaxis='y2',
-                showlegend=True
-            ))
+        # 1. Pre-Aggregate Data for Different Grains
+        last_date = self.df['posting_date'].max()
+        zoom_start = last_date - pd.Timedelta(days=7)
         
-        # 3. MONTHLY ANOMALY INDICATORS (on separate axis)
-        if self.anomalies is not None and not self.anomalies.empty and self.weekly_data is not None:
-            # Aggregate anomalies by MONTH
-            anoms = self.anomalies.copy()
-            anoms['month'] = pd.to_datetime(anoms['posting_date']).dt.to_period('M')
+        # DAILY (Keep Full History)
+        daily_agg = self.df.groupby('posting_date')['Net_Amount_USD'].sum().reset_index().sort_values('posting_date')
+        
+        # WEEKLY (Labels: W42, W43...)
+        weekly_agg = self.weekly_data.sort_values('week').copy()
+        try:
+             weekly_agg['week_label'] = weekly_agg['week'].apply(lambda x: f"W{x.isocalendar()[1]} '{x.strftime('%y')}" if hasattr(x, 'isocalendar') else str(x))
+        except:
+             weekly_agg['week_label'] = weekly_agg['week'].astype(str)
+        
+        # Week Zoom Logic (Last 20 Weeks)
+        distinct_weeks = weekly_agg['week_label'].unique().tolist()
+        zoom_weeks = distinct_weeks[-20:] if len(distinct_weeks) > 20 else distinct_weeks
+
+        # MONTHLY
+        monthly_agg = self.df.copy()
+        monthly_agg['Month'] = monthly_agg['posting_date'].dt.to_period('M').astype(str)
+        monthly_agg = monthly_agg.groupby('Month')['Net_Amount_USD'].sum().reset_index()
+        
+        # 2. Add Traces for Each Grain
+        
+        # --- MONTHLY TRACES (Visible Default) ---
+        # Net Flow Bar
+        f0.add_trace(go.Bar(
+            x=monthly_agg['Month'], y=monthly_agg['Net_Amount_USD'],
+            marker_color=monthly_agg['Net_Amount_USD'].apply(lambda x: c_pos if x >= 0 else c_neg),
+            name='Monthly Net Flow', visible=True
+        ))
+        
+        # Monthly Anomalies (DE-STACKED via Y-Offset on y2)
+        if self.anomalies is not None and not self.anomalies.empty:
+            anoms_m = self.anomalies.copy()
+            anoms_m['Month'] = anoms_m['posting_date'].dt.to_period('M').astype(str)
+            # Group by Month AND Type
+            anoms_m_agg = anoms_m.groupby(['Month', 'anomaly_type'])['Amount in USD'].sum().reset_index()
             
-            monthly_agg = anoms.groupby('month').agg({
-                'Amount in USD': ['count', lambda x: x.abs().sum()],
-                'anomaly_type': lambda x: ', '.join(x.unique()[:3])  # Top 3 types
-            }).reset_index()
-            monthly_agg.columns = ['month', 'count', 'total_value', 'types']
-            
-            # Merge with monthly data to get labels
-            monthly_agg = monthly_data.merge(monthly_agg, on='month', how='left')
-            monthly_agg = monthly_agg[monthly_agg['count'].notna()]
-            
-            # Risk severity markers
-            max_count = monthly_agg['count'].max() if len(monthly_agg) > 0 else 1
-            sizes = 25 + (monthly_agg['count'] / max_count * 45)  # 25-70px range
+            # Map Types to Y-Offsets (0=Base, 1=Mid, 2=High)
+            # Map Types to Y-Offsets (0=Base, 1=Mid, 2=High)
+            type_map = {'Duplicate Payment': 2, 'Statistical Anomaly (IsoForest)': 1, 'Round Number': 0}
+            color_map = {'Duplicate Payment': AZ['blue'], 'Statistical Anomaly (IsoForest)': AZ['mulberry'], 'Round Number': AZ['gold']}
+            symbol_map = {'Duplicate Payment': 'diamond', 'Statistical Anomaly (IsoForest)': 'circle', 'Round Number': 'square'}
+
+            anoms_m_agg['y_offset'] = anoms_m_agg['anomaly_type'].map(lambda x: type_map.get(x, 0))
+            anoms_m_agg['color'] = anoms_m_agg['anomaly_type'].map(lambda x: color_map.get(x, AZ['navy']))
+            anoms_m_agg['symbol'] = anoms_m_agg['anomaly_type'].map(lambda x: symbol_map.get(x, 'circle'))
+            anoms_m_agg['Size'] = anoms_m_agg['Amount in USD'].abs().apply(lambda x: max(14, min(45, (x**0.5)/15)))
             
             f0.add_trace(go.Scatter(
-                x=monthly_agg['month_label'],
-                y=monthly_agg['count'],
-                mode='markers+text',
-                marker=dict(
-                    size=sizes,
-                    color=monthly_agg['count'],
-                    colorscale=[[0, 'rgba(255,200,200,0.6)'], [1, 'rgba(208,0,111,1.0)']],
-                    showscale=True,
-                    colorbar=dict(title='Risk<br>Count', thickness=15, len=0.3, y=0.2),
-                    line=dict(color='white', width=2)
-                ),
-                text=[f"{int(c)}" for c in monthly_agg['count']],
-                textposition='middle center',
-                textfont=dict(color='white', size=12, family='Arial Black'),
-                name='Anomalies Detected',
-                hovertemplate='<b>%{x}</b><br>Anomalies: %{y}<br>Value: $' + monthly_agg['total_value'].apply(lambda x: f"{x/1e6:.1f}M") + '<extra></extra>',
-                yaxis='y3'
+                x=anoms_m_agg['Month'], y=anoms_m_agg['y_offset'],
+                mode='markers', # No Text Icons
+                marker=dict(size=anoms_m_agg['Size'], color=anoms_m_agg['color'], symbol=anoms_m_agg['symbol'], opacity=0.9, line=dict(color='white', width=1)),
+                hovertemplate='<b>%{customdata[0]}</b><br>Amount: $%{customdata[1]:,.0f}<extra></extra>',
+                customdata=list(zip(anoms_m_agg['anomaly_type'], anoms_m_agg['Amount in USD'].abs())),
+                name='Monthly Risk', visible=True, yaxis='y2'
+            ))
+
+        # --- WEEKLY TRACES (Hidden) ---
+        f0.add_trace(go.Scatter(
+            x=weekly_agg['week_label'], y=weekly_agg['weekly_amount_usd'],
+            mode='lines+markers',
+            line=dict(color=AZ['navy'], width=3),
+            marker=dict(size=8, color=AZ['blue'], line=dict(width=2, color='white')),
+            name='Weekly Trend', visible=False
+        ))
+        
+        # Weekly Anomalies (Aggregated "Risk Clumps" per Week)
+        if self.anomalies is not None:
+             anoms_w = self.anomalies.copy()
+             try:
+                 anoms_w['week_label'] = anoms_w['posting_date'].apply(lambda x: f"W{x.isocalendar()[1]} '{x.strftime('%y')}")
+             except:
+                 anoms_w['week_label'] = 'Unknown'
+             
+             # Aggregate sum per week
+             anoms_w_agg = anoms_w.groupby('week_label')['Amount in USD'].sum().reset_index()
+             anoms_w_agg['Size'] = anoms_w_agg['Amount in USD'].abs().apply(lambda x: max(10, min(60, (x**0.4)/5)))
+             
+             f0.add_trace(go.Scatter(
+                x=anoms_w_agg['week_label'], 
+                y=[0] * len(anoms_w_agg), 
+                mode='markers',
+                marker=dict(size=anoms_w_agg['Size'], color=AZ['mulberry'], opacity=0.7, line=dict(color='white', width=1)), # Clumps = Mulberry
+                name='Weekly Risk Clump',
+                hovertemplate='<b>Week Risk Sum</b><br>$%{customdata:,.0f}',
+                customdata=anoms_w_agg['Amount in USD'].abs(),
+                visible=False
             ))
         
-        # 4. THRESHOLD BAND (Normal Range)
-        if self.weekly_data is not None:
-            # Use monthly data for clearer average
-            avg = monthly_data['monthly_amount_usd'].mean()
-            std = monthly_data['monthly_amount_usd'].std()
-            
-            # Normal range annotation
-            f0.add_hrect(
-                y0=avg - std, y1=avg + std,
-                fillcolor='rgba(150,150,150,0.15)', 
-                line_width=0,
-                annotation_text=f'Normal Range (Avg ± Std Dev)<br>${avg/1e6:.1f}M ± ${std/1e6:.1f}M',
-                annotation_position='left',
-                annotation=dict(font=dict(size=9, color='#666')),
-                yref='y'
-            )
+        # --- DAILY TRACES (Hidden) ---
+        f0.add_trace(go.Scatter(
+            x=daily_agg['posting_date'], y=daily_agg['Net_Amount_USD'],
+            mode='lines',
+            line=dict(color=AZ['navy'], width=1),
+            fill='tozeroy', fillcolor='rgba(0,56,101,0.1)',
+            name='Daily Volatility', visible=False
+        ))
         
-        # Add clear instruction box
-        f0.add_annotation(
-            text="<b>🔍 PRIORITY FOCUS:</b><br>"
-                 "1. <b>Dark blue line</b> = Net weekly cash position<br>"
-                 "2. <b>Red markers with numbers</b> = Weeks requiring investigation<br>"
-                 "3. Light bars show total money in/out (context only)<br>"
-                 "4. Grey zone = Typical week-to-week variation",
-            xref='paper', yref='paper',
-            x=0.98, y=0.02,
-            xanchor='right', yanchor='bottom',
-            showarrow=False,
-            align='left',
-            bgcolor='rgba(255,255,255,0.95)',
-            bordercolor=AZ['navy'],
-            borderwidth=2,
-            font=dict(size=10, color=AZ['navy'])
-        )
-        
-        style_fig(f0, "Monthly Cash Flow & Risk Analysis")
+        # Daily Individual Anomalies
+        if self.anomalies is not None:
+             f0.add_trace(go.Scatter(
+                x=self.anomalies['posting_date'], 
+                y=self.anomalies['Amount in USD'],
+                mode='markers',
+                marker=dict(symbol='x', size=8, color=AZ['magenta']),
+                name='Individual Anomalies',
+                hovertemplate='<b>%{text}</b><br>$%{y:,.0f}',
+                text=self.anomalies['anomaly_type'],
+                visible=False
+            ))
+
+        # 3. Update Menus (Toggle Logic)
         f0.update_layout(
-            height=550,
-            xaxis=dict(title='Month', tickangle=-45),
-            yaxis=dict(title='Net Cash Flow (USD)', side='left'),
-            yaxis2=dict(title='Total Inflow/Outflow (USD)', overlaying='y', side='right', showgrid=False, range=[0, max(monthly_flows['inflow'].max(), monthly_flows['outflow'].max()) * 1.2]),
-            yaxis3=dict(title='Anomaly Count', overlaying='y', side='right', position=0.95, showgrid=False),
-            showlegend=True,
-            legend=dict(x=0.01, y=0.99, bgcolor='rgba(255,255,255,0.9)'),
-            hovermode='x unified'
+            updatemenus=[
+                dict(
+                    type="buttons", direction="left", active=0, x=1.0, y=1.15,
+                    buttons=list([
+                        dict(label="Month", method="update",
+                             args=[{"visible": [True, True, False, False, False, False]},
+                                   {"title": "Monthly Overview (De-Stacked Risks)", 
+                                    "xaxis": {"type": "category", "range": None},
+                                    "yaxis2.visible": False}]),
+                        dict(label="Week", method="update",
+                             args=[{"visible": [False, False, True, True, False, False]},
+                                   {"title": "Weekly Trend (20-Week Zoom)", 
+                                    "xaxis": {"type": "category", "range": [zoom_weeks[0], zoom_weeks[-1]] if zoom_weeks else None},
+                                    "yaxis2.visible": False}]),
+                        dict(label="Day", method="update",
+                             args=[{"visible": [False, False, False, False, True, True]},
+                                   {"title": "Daily Zoom (Last 7 Days)", 
+                                    "xaxis": {"type": "date", "range": [zoom_start, last_date]},
+                                    "yaxis2.visible": False}])
+                    ]),
+                )
+            ],
+            yaxis2=dict(overlaying='y', range=[-1, 3], showgrid=False, showticklabels=False, visible=False)
         )
+        
+        style_fig(f0, "Monthly Cash Flow Overview")
+        f0.update_layout(height=500, margin=dict(t=50))
         figures_html.append(pio.to_html(f0, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
+        
+        # (Breakdown chart removed - info integrated into dango hover)
 
 
-        # --- FIG 1: CENTERPIECE MAP (SEPARATED TRACES) ---
+        # --- FIG 1: CENTERPIECE MAP (CHOROPLETH + LAYERS) ---
         f1 = go.Figure()
+        # Entity to ISO-3 Mapping for Choropleth
         geo_map = {'TW10': ['Taiwan', 23.6, 120.9], 'PH10': ['Philippines', 12.8, 121.7], 'TH10': ['Thailand', 15.8, 100.9], 'ID10': ['Indonesia', -0.7, 113.9], 'SS10': ['Singapore', 1.3, 103.8], 'MY10': ['Malaysia', 4.2, 101.9], 'VN20': ['Vietnam', 14.0, 108.2], 'KR10': ['South Korea', 35.9, 127.7]}
+        iso_map = {'TW10': 'TWN', 'PH10': 'PHL', 'TH10': 'THA', 'ID10': 'IDN', 'SS10': 'SGP', 'MY10': 'MYS', 'VN20': 'VNM', 'KR10': 'KOR'}
         
         # Data Aggregation for Map
         net_by_ent = self.df.groupby('Name')['Net_Amount_USD'].sum() if 'Net_Amount_USD' in self.df.columns else pd.Series(dtype=float)
         
-        # Risk Layers - Use Global Source of Truth to ensure consistency
-        # We still need groupby for per-country bubbles, but total should match verified_dupe_sum
+        # Prepare Choropleth Data
+        choro_iso = []
+        choro_val = []
+        choro_text = []
+        
+        # Prepare Overlay Data
+        anom_lats, anom_lons, anom_sizes, anom_text = [], [], [], []
+        dupe_lats, dupe_lons, dupe_text = [], [], []
+
+        # Risk Data Sources (Global)
         dupes_only = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment'] if self.anomalies is not None else pd.DataFrame()
-        # ABSOLUTE SUM for Map Bubbles too (Consistency)
         dupe_by_ent = dupes_only.groupby('Name')['Amount in USD'].apply(lambda x: x.abs().sum()) if not dupes_only.empty else pd.Series(dtype=float)
-        # self.verified_dupe_sum is already set globally
         
         anoms_only = self.anomalies[self.anomalies['anomaly_type'] == 'Statistical Anomaly (IsoForest)'] if self.anomalies is not None else pd.DataFrame()
         anom_by_ent = anoms_only.groupby('Name')['Amount in USD'].sum() if not anoms_only.empty else pd.Series(dtype=float)
-        
-        # Collect data for SEPARATED traces
-        net_surplus_lats, net_surplus_lons, net_surplus_sizes, net_surplus_text = [], [], [], []
-        net_deficit_lats, net_deficit_lons, net_deficit_sizes, net_deficit_text = [], [], [], []
-        anom_lats, anom_lons, anom_text = [], [], []
-        dupe_lats, dupe_lons, dupe_text = [], [], []
-        
+
         for code, info in geo_map.items():
             lat, lon, name = info[1], info[2], info[0]
             net_val = net_by_ent.get(code, 0)
             dupe_val = dupe_by_ent.get(code, 0)
             anom_val = anom_by_ent.get(code, 0)
             
-            # Forecast trend
-            fc_trend = "Stable"
-            if 'entities' in self.forecasts and code in self.forecasts['entities']:
-                fc = self.forecasts['entities'][code]['1month']
-                if not fc.empty:
-                    trend_val = (fc.mean() - fc.iloc[0]) / (abs(fc.iloc[0]) + 1)
-                    if trend_val > 0.05: fc_trend = "Growing"
-                    elif trend_val < -0.05: fc_trend = "Declining"
-            
-            # Helper for smart formatting
-            def smart_fmt(v):
-                av = abs(v)
-                if av >= 1e9: return f"${v/1e9:.1f}B"
-                elif av >= 1e6: return f"${v/1e6:.1f}M"
-                elif av >= 1e3: return f"${v/1e3:.0f}K"
-                else: return f"${v:.0f}"
+            # Choropleth Data
+            if code in iso_map:
+                choro_iso.append(iso_map[code])
+                choro_val.append(net_val)
+                choro_text.append(f"<b>{name}</b><br>Net: ${net_val/1e6:+.1f}M")
 
-            # 1. Net Flow Bubbles (SEPARATED by surplus/deficit)
-            if net_val != 0:
-                size = max(20, min(70, abs(net_val)/4e4))
-                text = f"<b>{name}</b><br>Net: {smart_fmt(net_val)}<br>Trend: {fc_trend}"
-                
-                if net_val > 0:
-                    net_surplus_lats.append(lat)
-                    net_surplus_lons.append(lon)
-                    net_surplus_sizes.append(size)
-                    net_surplus_text.append(text)
-                else:
-                    net_deficit_lats.append(lat)
-                    net_deficit_lons.append(lon)
-                    net_deficit_sizes.append(size)
-                    net_deficit_text.append(text)
-            
-            # 2. Anomalies (SEPARATE trace)
+            # Anomaly Overlays (Rings)
             if anom_val > 0:
                 anom_lats.append(lat)
                 anom_lons.append(lon)
-                anom_text.append(f"<b>{name}</b><br>Anomalies: {smart_fmt(anom_val)}")
+                # Size based on value magnitude roughly
+                ring_size = max(25, min(60, abs(anom_val)/2e4))
+                anom_sizes.append(ring_size)
+                anom_text.append(f"<b>{name}</b><br>ML Anomalies: ${anom_val/1e6:.1f}M")
             
-            # 3. Duplicates (SEPARATE trace)
-            # Only show if value is material (> $10k) to avoid clutter
+            # Duplicate Overlays (Diamonds)
             if dupe_val > 10000:
-                dupe_lats.append(lat - 0.8)
-                dupe_lons.append(lon + 1.5)
-                dupe_text.append(f"<b>{name}</b><br>Duplicates: {smart_fmt(dupe_val)}")
+                dupe_lats.append(lat - 0.5) # Slight offset
+                dupe_lons.append(lon + 0.5)
+                dupe_text.append(f"<b>{name}</b><br>Duplicates: ${dupe_val/1e6:.3f}M")
+
+        # 1. Base Layer: CHOROPLETH (Regional Coloring)
+        f1.add_trace(go.Choropleth(
+            locations=choro_iso,
+            z=choro_val,
+            text=choro_text,
+            colorscale='RdBu', # Red (Deficit) to Blue (Surplus)
+            marker_line_color='white',
+            marker_line_width=0.5,
+            colorbar=dict(title="Net Flow", len=0.4, x=0.02, y=0.5, thickness=10), # Small colorbar left
+            showscale=False # Hide colorbar to keep standalone legend clean? Let's hide and use annotations or custom legend if needed. User asked for Legend Left.
+        ))
         
-        # Add SEPARATED traces (each toggleable independently)
-        # Net Surplus
-        if net_surplus_lats:
-            f1.add_trace(go.Scattergeo(
-                lat=net_surplus_lats, lon=net_surplus_lons,
-                mode='markers',
-                marker=dict(size=net_surplus_sizes, color=c_pos, opacity=0.85, line=dict(color='white', width=2)),
-                name='Net Surplus',
-                text=net_surplus_text,
-                hovertemplate='%{text}<extra></extra>'
-            ))
+        # 2. Key Markers Legend (Invisible traces for standard legend)
+        # f1.add_trace(go.Scattergeo(lon=[None], lat=[None], mode='markers', marker=dict(color=AZ['blue'], size=10), name='Net Surplus Region'))
+        # f1.add_trace(go.Scattergeo(lon=[None], lat=[None], mode='markers', marker=dict(color=c_neg, size=10), name='Net Deficit Region'))
         
-        # Net Deficit
-        if net_deficit_lats:
-            f1.add_trace(go.Scattergeo(
-                lat=net_deficit_lats, lon=net_deficit_lons,
-                mode='markers',
-                marker=dict(size=net_deficit_sizes, color=c_neg, opacity=0.85, line=dict(color='white', width=2)),
-                name='Net Deficit',
-                text=net_deficit_text,
-                hovertemplate='%{text}<extra></extra>'
-            ))
-        
-        # Anomaly Detected (RED RING overlay - SCALED to match bubble)
+        # 3. Anomaly Rings
         if anom_lats:
             f1.add_trace(go.Scattergeo(
                 lat=anom_lats, lon=anom_lons,
                 mode='markers',
-                marker=dict(
-                    size=[s + 10 for s in [max(20, min(70, abs(net_by_ent.get(code, 0))/4e4)) for code in [k for k, v in geo_map.items() if anom_by_ent.get(k, 0) > 0]]], # Match bubble size + 10px for ring
-                    color='rgba(0,0,0,0)', 
-                    line=dict(color='red', width=4)
-                ),
-                name='Anomaly Detected',
+                marker=dict(size=anom_sizes, color='rgba(0,0,0,0)', line=dict(color=c_neg, width=3), opacity=1.0),
+                name='⚠️ Anomaly Detected',
                 text=anom_text,
                 hovertemplate='%{text}<extra></extra>'
             ))
-        
-        # Duplicate Risk (GOLD DIAMOND)
+            
+        # 4. Duplicate Diamonds
         if dupe_lats:
             f1.add_trace(go.Scattergeo(
                 lat=dupe_lats, lon=dupe_lons,
                 mode='markers',
-                marker=dict(size=16, color=AZ['gold'], symbol='diamond', line=dict(color='white', width=2)),
-                name='Duplicate Risk',
+                marker=dict(size=12, color=AZ['gold'], symbol='diamond', line=dict(color='white', width=1)),
+                name='💰 Duplicate Risk',
                 text=dupe_text,
                 hovertemplate='%{text}<extra></extra>'
             ))
 
-        
+        style_fig(f1, "Regional Cash Flow (Net Flow Color & Risk Layers)")
         f1.update_geos(
-            projection_type="natural earth",
-            projection_scale=1.4,  # ZOOM IN to fill space better
-            center=dict(lat=15, lon=115),  # Center on SE Asia
-            showland=True, 
-            landcolor="#F4F7F6", 
-            showcountries=True, 
-            countrycolor="#D1D5DB",
-            showocean=False, # Transparent ocean
-            showcoastlines=True,
-            coastlinecolor="#999",
-            bgcolor='rgba(0,0,0,0)' # Transparent Geo background
+            projection_type="orthographic",
+            projection_rotation=dict(lon=115, lat=10, roll=0), # Shifted center slightly
+            projection_scale=1.0, # Zoomed out context
+            showland=True, landcolor="#F5F5F5",
+            showcountries=True, countrycolor="#DDD",
+            showocean=True, oceancolor="rgba(104, 210, 223, 0.05)",
+            showcoastlines=True, coastlinecolor="#CCC",
+            bgcolor='rgba(0,0,0,0)', fitbounds="locations" # Try fitbounds? No, orthographic handles scale manually better.
         )
         
-        # Centerpiece Styling: No margins, clean look, TRANSPARENT
-        style_fig(f1, "Regional Cash Flow Intelligence (Net Flow & Risk Layers)")
-        f1.update_layout(
-            height=750,  # Even taller
-            margin=dict(l=0, r=0, t=40, b=0),
-            paper_bgcolor='rgba(0,0,0,0)', # Transparent paper
-            plot_bgcolor='rgba(0,0,0,0)', # Transparent plot area
-            legend=dict(
-                x=0.02, y=0.98, 
-                bgcolor='rgba(255,255,255,0.95)', 
-                bordercolor='#999', 
-                borderwidth=1,
-                font=dict(size=11)
-            )
+        # --- FIG 1: CENTERPIECE MAP (REVERT TO BUBBLES + MAX WIDTH) ---
+        f1 = go.Figure()
+        geo_map = {'TW10': ['Taiwan', 23.6, 120.9], 'PH10': ['Philippines', 12.8, 121.7], 'TH10': ['Thailand', 15.8, 100.9], 'ID10': ['Indonesia', -0.7, 113.9], 'SS10': ['Singapore', 1.3, 103.8], 'MY10': ['Malaysia', 4.2, 101.9], 'VN20': ['Vietnam', 14.0, 108.2], 'KR10': ['South Korea', 35.9, 127.7]}
+        
+        # Calculate Aggregates
+        net_by_ent = self.df.groupby('Name')['Net_Amount_USD'].sum() if 'Net_Amount_USD' in self.df.columns else pd.Series(dtype=float)
+        
+        # Trace Collections
+        net_surplus_lats, net_surplus_lons, net_surplus_sizes, net_surplus_text = [], [], [], []
+        net_deficit_lats, net_deficit_lons, net_deficit_sizes, net_deficit_text = [], [], [], []
+        anom_lats, anom_lons, anom_sizes, anom_text = [], [], [], []
+        dupe_lats, dupe_lons, dupe_text = [], [], []
+
+        # Risk Data Sources (Global)
+        dupes_only = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment'] if self.anomalies is not None else pd.DataFrame()
+        dupe_by_ent = dupes_only.groupby('Name')['Amount in USD'].apply(lambda x: x.abs().sum()) if not dupes_only.empty else pd.Series(dtype=float)
+        
+        anoms_only = self.anomalies[self.anomalies['anomaly_type'] == 'Statistical Anomaly (IsoForest)'] if self.anomalies is not None else pd.DataFrame()
+        anom_by_ent = anoms_only.groupby('Name')['Amount in USD'].sum() if not anoms_only.empty else pd.Series(dtype=float)
+        
+        # Helper
+        def smart_fmt(v):
+            av = abs(v)
+            if av >= 1e9: return f"${v/1e9:.1f}B"
+            elif av >= 1e6: return f"${v/1e6:.1f}M"
+            elif av >= 1e3: return f"${v/1e3:.0f}K"
+            else: return f"${v:.0f}"
+
+        for code, info in geo_map.items():
+            lat, lon, name = info[1], info[2], info[0]
+            net_val = net_by_ent.get(code, 0)
+            dupe_val = dupe_by_ent.get(code, 0)
+            anom_val = anom_by_ent.get(code, 0)
+            
+            # 1. Net Flow Bubbles
+            if net_val != 0:
+                size = max(20, min(65, abs(net_val)/5e4)) # Tuned size
+                text = f"<b>{name}</b><br>Net: {smart_fmt(net_val)}"
+                if net_val > 0:
+                    net_surplus_lats.append(lat); net_surplus_lons.append(lon); net_surplus_sizes.append(size); net_surplus_text.append(text)
+                else:
+                    net_deficit_lats.append(lat); net_deficit_lons.append(lon); net_deficit_sizes.append(size); net_deficit_text.append(text)
+            
+            # 2. Risk Overlays
+            if anom_val > 0:
+                anom_lats.append(lat); anom_lons.append(lon)
+                ring_size = size * 1.3 if size > 0 else 30
+                if ring_size < size + 10: ring_size = size + 10
+                anom_sizes.append(ring_size); anom_text.append(f"<b>{name}</b><br>ML Anomalies: {smart_fmt(anom_val)}")
+            
+            if dupe_val > 10000:
+                dupe_lats.append(lat - 0.5); dupe_lons.append(lon + 0.5)
+                dupe_text.append(f"<b>{name}</b><br>Duplicates: {smart_fmt(dupe_val)}")
+
+        # Add Traces
+        if net_surplus_lats: f1.add_trace(go.Scattergeo(lat=net_surplus_lats, lon=net_surplus_lons, mode='markers', marker=dict(size=net_surplus_sizes, color=AZ['lime'], opacity=0.85, line=dict(color='white', width=1)), name='Net Surplus', text=net_surplus_text, hovertemplate='%{text}<extra></extra>'))
+        if net_deficit_lats: f1.add_trace(go.Scattergeo(lat=net_deficit_lats, lon=net_deficit_lons, mode='markers', marker=dict(size=net_deficit_sizes, color=c_neg, opacity=0.85, line=dict(color='white', width=1)), name='Net Deficit', text=net_deficit_text, hovertemplate='%{text}<extra></extra>'))
+        if anom_lats: f1.add_trace(go.Scattergeo(lat=anom_lats, lon=anom_lons, mode='markers', marker=dict(size=anom_sizes, color='rgba(0,0,0,0)', line=dict(color=AZ['mulberry'], width=3), opacity=1.0), name='Anomaly Detected', text=anom_text, hovertemplate='%{text}<extra></extra>'))
+        if dupe_lats: f1.add_trace(go.Scattergeo(lat=dupe_lats, lon=dupe_lons, mode='markers', marker=dict(size=14, color=AZ['blue'], symbol='diamond', line=dict(color='white', width=1)), name='Duplicate Risk', text=dupe_text, hovertemplate='%{text}<extra></extra>'))
+
+        style_fig(f1, "Regional Cash Flow Intelligence")
+        f1.update_geos(
+            projection_type="orthographic", projection_rotation=dict(lon=115, lat=10, roll=0), projection_scale=1.0, 
+            showland=True, landcolor="#F5F5F5", showcountries=True, countrycolor="#DDD", showocean=True, oceancolor="rgba(104, 210, 223, 0.05)", showcoastlines=True, coastlinecolor="#CCC", bgcolor='rgba(0,0,0,0)'
         )
-        figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+        
+        f1.update_layout(
+            height=600,
+            # MAX WIDTH: Tiny left margin, Zero right margin
+            margin=dict(l=20, r=0, t=30, b=0),
+            autosize=True,
+            legend=dict(x=0, y=0.9, xanchor='left', bgcolor='rgba(255,255,255,0.8)'),
+        )
+        figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs=False, config={'displayModeBar': False, 'scrollZoom': True}))
 
 
         # --- FIG 2: 1-MONTH FORECAST WITH CONFIDENCE ---
@@ -2021,10 +2064,10 @@ class CashFlowAnalyzer:
             # Connector: last hist point to first forecast point
             f2.add_trace(go.Scatter(x=[hist.index[-1], fc_1m.index[0]], y=[hist.values[-1], fc_1m.values[0]], mode='lines', line=dict(color=c_pos, width=2, dash='dot'), showlegend=False))
             # Forecast line: only forecast points
-            f2.add_trace(go.Scatter(x=fc_1m.index, y=fc_1m.values, name="1M Forecast", line=dict(color=c_pos, width=2, dash='dash')))
+            f2.add_trace(go.Scatter(x=fc_1m.index, y=fc_1m.values, name="1M Forecast", line=dict(color=AZ['navy'], width=2, dash='dash')))
             # Confidence: starts from first forecast point
             upper_c, lower_c = fc_1m + rmse, fc_1m - rmse
-            f2.add_trace(go.Scatter(x=list(fc_1m.index)+list(fc_1m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(196,214,0,0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
+            f2.add_trace(go.Scatter(x=list(fc_1m.index)+list(fc_1m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(60, 16, 83, 0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
             # Risk Detection + Dip Highlighting with Top Driver RCA
             avg_h = hist.mean()
             dip_hovers = []
@@ -2063,6 +2106,8 @@ class CashFlowAnalyzer:
         figures_html.append(pio.to_html(f2, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
 
+
+            
         # --- FIG 3: 6-MONTH FORECAST WITH INSIGHTS ---
         f3 = go.Figure()
         hist_long = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()  # All historical data
@@ -2071,13 +2116,17 @@ class CashFlowAnalyzer:
         if 'total' in self.forecasts:
             fc_6m = self.forecasts['total']['6month']
             rmse = self.forecasts['total']['rmse']
-            # Connector: last hist point to first forecast point
-            f3.add_trace(go.Scatter(x=[hist_long.index[-1], fc_6m.index[0]], y=[hist_long.values[-1], fc_6m.values[0]], mode='lines', line=dict(color=AZ['blue'], width=2, dash='dot'), showlegend=False))
-            # Forecast line: only forecast points
-            f3.add_trace(go.Scatter(x=fc_6m.index, y=fc_6m.values, name="6M Forecast", line=dict(color=AZ['blue'], width=2, dash='dash')))
-            # Confidence: starts from first forecast point
-            upper_c, lower_c = fc_6m + rmse, fc_6m - rmse
-            f3.add_trace(go.Scatter(x=list(fc_6m.index)+list(fc_6m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(104,210,223,0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
+            
+            # Connector
+            f3.add_trace(go.Scatter(x=[hist_long.index[-1], fc_6m.index[0]], y=[hist_long.values[-1], fc_6m.values[0]], mode='lines', line=dict(color=AZ['navy'], width=2, dash='dot'), showlegend=False))
+            
+            # Forecast
+            f3.add_trace(go.Scatter(x=fc_6m.index, y=fc_6m.values, name="6M Forecast", line=dict(color=AZ['navy'], width=2, dash='dash')))
+            
+            # Confidence
+            upper_c, lower_c = fc_6m + (rmse*1.5), fc_6m - (rmse*1.5) # Wider range for long term
+            f3.add_trace(go.Scatter(x=list(fc_6m.index)+list(fc_6m.index)[::-1], y=list(upper_c)+list(lower_c)[::-1], fill='toself', fillcolor='rgba(60, 16, 83, 0.15)', line=dict(color='rgba(0,0,0,0)'), name='Confidence'))
+
             # Insights
             if not fc_6m.empty:
                 min_wk = fc_6m.idxmin(); max_wk = fc_6m.idxmax()
@@ -2116,10 +2165,14 @@ class CashFlowAnalyzer:
                 y=plot_cats, 
                 x=plot_vals, 
                 orientation='h', 
-                marker=dict(color=colors, line=dict(width=0)),
+                marker=dict(
+                    color=colors, 
+                    line=dict(width=0.5, color='white'),
+                    opacity=0.9
+                ),
                 text=[f"${v/1e6:+.1f}M" for v in plot_vals], 
                 textposition='outside',
-                textfont=dict(size=11),
+                textfont=dict(size=12, family='Figtree', color=c_text),
                 hovertemplate='<b>%{y}</b><br>Net: $%{x:,.0f}<extra></extra>'
             ))
             
@@ -2127,9 +2180,10 @@ class CashFlowAnalyzer:
                 xaxis_title="Net Cash Flow (USD)", 
                 yaxis_title=None, 
                 showlegend=False,
-                height=650,  # Fixed height for better fit
-                margin=dict(l=220, r=100, t=40, b=60),
-                yaxis=dict(tickfont=dict(size=11))
+                height=600,  # Slightly shorter for better proportions
+                margin=dict(l=180, r=80, t=40, b=60),
+                yaxis=dict(tickfont=dict(size=12, family='Figtree')),
+                xaxis=dict(tickfont=dict(size=11, family='Figtree'), gridcolor='rgba(200,200,200,0.3)')
             )
             
         style_fig(f4, "Top Cash Flow Categories (Net Impact)")
@@ -2319,13 +2373,23 @@ class CashFlowAnalyzer:
                         f"Largest outflow category accounting for ${top_val/1e6:.1f}M",
                         f"Review {top_cat} spending efficiency",
                         "High" if top_val > 20000000 else "Medium",
-                        "c0"
+                        "c4"
                     ))
 
-        # Add forecast risks
+        # FORECAST STABILITY (RMSE Check)
+        if 'total' in self.forecasts:
+            rmse = self.forecasts['total'].get('rmse', 0)
+            fc_mean = self.forecasts['total']['6month'].mean() if '6month' in self.forecasts['total'] else 1
+            if fc_mean > 0 and (rmse / fc_mean) > 0.15: # If error is > 15% of mean
+                actions.append((
+                    f"Forecast Stability Risk (RMSE: ${rmse/1e6:.1f}M)",
+                    f"Model volatility indicates {rmse/fc_mean*100:.0f}% uncertainty range",
+                    "Validate model inputs for next cycle",
+                    "Medium",
+                    "c3"
+                ))
 
-
-        # Add forecast risks
+        # 1-MONTH FORECAST DIPS
         for r in risk_1m:
             # Parse the dip info
             parts = r.split('(')
@@ -2378,7 +2442,7 @@ class CashFlowAnalyzer:
             <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
             <script src="https://cdn.plot.ly/plotly-3.3.0.min.js"></script>
             <style>
-                body {{ background: {AZ['platinum']}; font-family: 'Figtree', 'Segoe UI', 'Arial', sans-serif; margin: 0; padding: 20px; color: {c_text}; }}
+                body {{ background: radial-gradient(circle at top left, #FFFFFF, {AZ['platinum']}); font-family: 'Figtree', 'Segoe UI', 'Arial', sans-serif; margin: 0; padding: 25px; color: {c_text}; min-height: 100vh; }}
                 @media print {{
                     @page {{ size: landscape; margin: 5mm; }}
                     body {{ background: {AZ['platinum']} !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; zoom: 60%; height: 100vh; overflow: hidden; }}
@@ -2389,16 +2453,18 @@ class CashFlowAnalyzer:
                     .action-table {{ font-size: 11px; }}
                 }}
                 .header-row {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
-                .export-btn {{ background: {AZ['navy']}; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.2s; }}
-                .export-btn:hover {{ background: {AZ['mulberry']}; transform: scale(1.02); }}
-                .top-metrics {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 20px; }}
-                .metric-card {{ background: white; padding: 18px; border-radius: 10px; border-top: 4px solid {AZ['mulberry']}; }}
+                .export-btn {{ background: {AZ['navy']}; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 800; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 4px 6px rgba(0,56,101,0.2); }}
+                .export-btn:hover {{ background: {AZ['mulberry']}; transform: translateY(-2px); box-shadow: 0 6px 12px rgba(131,0,81,0.3); }}
+                .top-metrics {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; margin-bottom: 30px; }}
+                .metric-card {{ background: white; padding: 20px; border-radius: 16px; border-top: 5px solid {AZ['mulberry']}; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); transition: transform 0.3s; }}
+                .metric-card:hover {{ transform: translateY(-5px); }}
                 .m-val {{ font-size: 26px; font-weight: 900; color: {AZ['mulberry']}; }}
                 .m-label {{ font-size: 10px; text-transform: uppercase; font-weight: bold; opacity: 0.7; }}
                 .m-desc {{ font-size: 9px; color: #666; margin-top: 6px; line-height: 1.3; }}
                 .grid {{ display: grid; grid-template-columns: repeat(12, 1fr); row-gap: 50px; column-gap: 20px; }} /* Generous row gap for breathing room */
-                .card {{ background: white; border-radius: 10px; padding: 10px; border: 1px solid #DDD; transition: all 0.3s; height: 100%; }}
-                .card.focused {{ border: 3px solid {c_neg}; box-shadow: 0 4px 15px rgba(208,0,111,0.3); }}
+                .card {{ background: white; border-radius: 16px; padding: 15px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.08); transition: all 0.3s; height: 100%; border: 1px solid rgba(0,0,0,0.02); }}
+                .card:hover {{ box-shadow: 0 20px 40px -10px rgba(0,0,0,0.12); }}
+                .card.focused {{ border: 2px solid {c_neg}; box-shadow: 0 0 0 4px rgba(208,0,111,0.1); }}
                 .full {{ grid-column: 1 / -1; }}
                 .action-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
                 .action-table th {{ background: {c_text}; color: white; padding: 10px; text-align: left; }}
@@ -2447,14 +2513,14 @@ class CashFlowAnalyzer:
                 
                 <!-- Row 2: MAP CENTERPIECE - Full Width with No Padding -->
                 <div class="card" id="c1" style="grid-column: span 12; height: 720px; padding: 0; overflow: hidden;">
-                    {figures_html[1]} <!-- Map is now Fig 1 -->
+                    {figures_html[1]} <!-- Map is Fig 1 -->
                 </div>
 
                 <!-- Row 3: Forecasts (1M & 6M) -->
                 <div class="card" id="c2" style="grid-column: span 6;">{figures_html[2]}</div>
                 <div class="card" id="c3" style="grid-column: span 6;">{figures_html[3]}</div>
 
-                <!-- Row 4: Anomaly Detection -->
+                <!-- Row 4: Risk Monitor with Dango Bubbles (Monthly Summary) -->
                 <div class="card" id="c0" style="grid-column: span 12;">{figures_html[0]}</div>
 
                 <!-- Row 5: Category Analysis (Full) -->
@@ -2546,7 +2612,7 @@ class CashFlowAnalyzer:
         
         print("\nIDENTIFIED RISKS:")
         for risk in insights['risks']:
-            print(f"  ⚠ {risk}")
+            print(f"  [RISK] {risk}")
         
         print("\nRECOMMENDATIONS:")
         for rec in insights['recommendations']:
