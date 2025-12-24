@@ -113,8 +113,9 @@ def clean_and_export_data():
         # A. Weekend Postings (Saturday=5, Sunday=6)
         df['is_weekend'] = df['posting_date'].dt.dayofweek.isin([5, 6])
         
-        # B. Potential Duplicates (Same Amount, Date, Category - regardless of Docs)
-        subset_cols = ['Amount in USD', 'posting_date', 'Category']
+        # B. Potential Duplicates (Same Amount, Date, Vendor - Entity Specific)
+        # CRITICAL: Must include 'Name' to avoid cross-entity matching
+        subset_cols = ['Name', 'Amount in USD', 'posting_date']
         # NOTE: We intentionally PRESERVE duplicates here so the Anomaly Detection module
         # in the main analysis can flag them for review.
         print("  • NOTE: Duplicates are PRESERVED for anomaly detection.")

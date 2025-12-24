@@ -18,6 +18,7 @@ import json
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.model_selection import RandomizedSearchCV
 # XGBoost for 6-month forecasting (ML-based, no TensorFlow needed)
 try:
     from xgboost import XGBRegressor
@@ -25,6 +26,16 @@ try:
 except ImportError:
     HAS_XGBOOST = False
     print("Note: XGBoost not installed. Using sklearn GradientBoosting for 6M forecast.")
+
+try:
+    import holidays
+    HAS_HOLIDAYS = True
+except ImportError:
+    HAS_HOLIDAYS = False
+    print("Note: 'holidays' library not installed. Holiday detection will be skipped.")
+
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
 
@@ -402,16 +413,22 @@ class CashFlowAnalyzer:
         self.forecast_metrics = {}
         
         # 1. Total Cash Flow Forecast
+        # 1. Total Cash Flow Forecast - UNIFIED & REFINED
         weekly_totals = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
         print("Generating forecasts for Total Net Cash Flow...")
         
-        # 1a. 1-Month Forecast using XGBoost (better accuracy than ARIMA for this data)
-        print("  [1M] Using XGBoost for short-term forecast (4 weeks)...")
-        fc_1m, mae_1m, mape_1m = self._generate_xgboost_forecast(weekly_totals, steps=4)
+        # Unified 24-week forecast (covers both 1M and 6M horizons)
+        # Using refine=True to enable Hyperparameter Tuning
+        print("  [Unified] Generating 24-week Forecast with Hyperparameter Tuning & Seasonality...")
+        fc_unified, mae_model, r2_model = self._generate_xgboost_forecast(weekly_totals, steps=24, refine=True)
         
-        # 1b. 6-Month Forecast using XGBoost (ML-based)
-        print("  [6M] Using XGBoost for long-term forecast (24 weeks)...")
-        fc_6m, mae_6m, mape_6m = self._generate_xgboost_forecast(weekly_totals, steps=24)
+        # Split horizons
+        fc_1m = fc_unified.head(4)
+        fc_6m = fc_unified  # Full 24 weeks
+        
+        # Metrics (approximate 1M metrics from the model's backtest performance)
+        mae_1m = mae_model
+        mape_1m = r2_model 
         
         # Store forecasts with metrics
         self.forecasts['total'] = {
@@ -421,19 +438,19 @@ class CashFlowAnalyzer:
             'historical': weekly_totals,
             'mae_1m': mae_1m,
             'mape_1m': mape_1m,
-            'mae_6m': mae_6m,
-            'mape_6m': mape_6m,
-            'rmse': mae_1m,  # backward compat
+            'mae_6m': mae_model,
+            'mape_6m': r2_model,
+            'rmse': mae_model,  # backward compat
             'trend': weekly_totals.diff().tail(4).mean() if len(weekly_totals) > 4 else 0
         }
         
         # Store KPI summaries for dashboard
         self.forecast_metrics['1m_sum'] = fc_1m.sum() if not fc_1m.empty else 0
         self.forecast_metrics['6m_sum'] = fc_6m.sum() if not fc_6m.empty else 0
-        self.forecast_metrics['1m_model'] = 'XGBoost' if HAS_XGBOOST else 'GradientBoosting'
-        self.forecast_metrics['6m_model'] = 'XGBoost' if HAS_XGBOOST else 'GradientBoosting'
-        self.forecast_metrics['1m_r2'] = mape_1m  # Now R² instead of MAPE
-        self.forecast_metrics['6m_r2'] = mape_6m  # Now R² instead of MAPE
+        self.forecast_metrics['1m_model'] = 'XGBoost (Tuned)' if HAS_XGBOOST else 'GradientBoosting'
+        self.forecast_metrics['6m_model'] = 'XGBoost (Tuned)' if HAS_XGBOOST else 'GradientBoosting'
+        self.forecast_metrics['1m_r2'] = r2_model
+        self.forecast_metrics['6m_r2'] = r2_model
         
         # Backward compatibility
         self.forecasts['historical'] = weekly_totals
@@ -642,6 +659,10 @@ class CashFlowAnalyzer:
             for atype, count in summary.items():
                 print(f"  • {atype}: {count} items")
             
+            # Print Total Duplicate Risk
+            if hasattr(self, 'verified_dupe_sum'):
+                 print(f"  • Total Potential Duplicates: ${self.verified_dupe_sum/1e6:.1f}M")
+
             print("\n>>> HIGH PRIORITY INVESTIGATION LIST (Top Risks)")
             high_risk = self.anomalies.head(5)
             print(f"{'Date':<12} | {'DocNo':<10} | {'Type':<20} | {'Amount ($)':>12} | {'Category'}")
@@ -811,20 +832,16 @@ class CashFlowAnalyzer:
             forecast_dates = pd.date_range(start=series.index[-1] + timedelta(days=1), periods=steps, freq='W-MON')
             return pd.Series([ma] * steps, index=forecast_dates), 0, 0
 
-    def _generate_xgboost_forecast(self, series, steps=24):
+    def _generate_xgboost_forecast(self, series, steps=24, refine=False):
         """
-        Generate 6-month (24-week) forecast using XGBoost (or GradientBoosting fallback).
-        XGBoost excels at: capturing non-linear patterns, feature interactions, long-term trends.
-        No TensorFlow required - pure ML approach.
+        Generate forecast using XGBoost with Fourier Seasonality and Optional Hyperparameter Tuning.
         """
         if series.empty or len(series) < 20:
             return pd.Series(dtype=float), 0, 0
         
         try:
-            # Create lagged features for ML model
+            # Create lagged features
             lookback = min(8, len(series) - 1)
-            
-            # Build feature matrix with lag features
             df_features = pd.DataFrame({'target': series.values})
             for lag in range(1, lookback + 1):
                 df_features[f'lag_{lag}'] = df_features['target'].shift(lag)
@@ -833,34 +850,43 @@ class CashFlowAnalyzer:
             df_features['week_num'] = range(len(df_features))
             df_features['rolling_mean_4'] = df_features['target'].rolling(4).mean()
             df_features['rolling_std_4'] = df_features['target'].rolling(4).std()
+
+            # --- FOURIER TERMS (Seasonality) ---
+            # Assume annual seasonality (52 weeks)
+            df_features['sin_week'] = np.sin(2 * np.pi * df_features['week_num'] / 52)
+            df_features['cos_week'] = np.cos(2 * np.pi * df_features['week_num'] / 52)
             
-            # Drop NaN rows from lagging
             df_features = df_features.dropna()
             
             X = df_features.drop('target', axis=1).values
             y = df_features['target'].values
             
-            # Select model based on availability
-            if HAS_XGBOOST:
-                model = XGBRegressor(
-                    n_estimators=100, 
-                    max_depth=4, 
-                    learning_rate=0.1,
-                    random_state=42,
-                    verbosity=0
-                )
-                model_name = "XGBoost"
-            else:
-                model = GradientBoostingRegressor(
-                    n_estimators=100,
-                    max_depth=4,
-                    learning_rate=0.1,
-                    random_state=42
-                )
-                model_name = "GradientBoosting"
+            model_name = "GradientBoosting"
+            model = None
             
-            # Fit model
-            model.fit(X, y)
+            if HAS_XGBOOST:
+                model_name = "XGBoost"
+                base_model = XGBRegressor(random_state=42, verbosity=0)
+                
+                if refine:
+                    print("    > Tuning Hyperparameters (RandomizedSearchCV)...")
+                    param_dist = {
+                        'n_estimators': [100, 200, 300],
+                        'max_depth': [3, 4, 5, 6],
+                        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                        'subsample': [0.7, 0.8, 0.9, 1.0],
+                        'colsample_bytree': [0.7, 0.8, 0.9, 1.0]
+                    }
+                    search = RandomizedSearchCV(base_model, param_dist, n_iter=10, cv=3, scoring='neg_mean_absolute_error', random_state=42, n_jobs=-1)
+                    search.fit(X, y)
+                    model = search.best_estimator_
+                    print(f"    > Best Params: {search.best_params_}")
+                else:
+                    model = XGBRegressor(n_estimators=100, max_depth=4, learning_rate=0.1, random_state=42, verbosity=0)
+                    model.fit(X, y)
+            else:
+                model = GradientBoostingRegressor(n_estimators=100, max_depth=4, learning_rate=0.1, random_state=42)
+                model.fit(X, y)
             
             # Recursive forecasting
             predictions = []
@@ -869,30 +895,41 @@ class CashFlowAnalyzer:
             rolling_vals = list(series.values[-4:])
             
             for i in range(steps):
-                # Build feature vector
-                features = last_values[-lookback:][::-1]  # lag_1 to lag_8
-                features.append(current_week + i)  # week_num
-                features.append(np.mean(rolling_vals))  # rolling_mean_4
-                features.append(np.std(rolling_vals) if len(rolling_vals) > 1 else 0)  # rolling_std_4
+                # Build feature vector matching training columns
+                # [lag_1, ..., lag_8, week_num, roll_mean, roll_std, sin, cos]
+                
+                # lags (last_values reversed)
+                features = last_values[-lookback:][::-1] 
+                
+                # week_num
+                next_week_num = current_week + i
+                features.append(next_week_num) 
+                
+                # rolling stats
+                features.append(np.mean(rolling_vals))
+                features.append(np.std(rolling_vals) if len(rolling_vals) > 1 else 0)
+                
+                # Fourier
+                features.append(np.sin(2 * np.pi * next_week_num / 52))
+                features.append(np.cos(2 * np.pi * next_week_num / 52))
                 
                 pred = model.predict([features])[0]
                 predictions.append(pred)
                 
-                # Update for next iteration
                 last_values.append(pred)
                 rolling_vals.append(pred)
-                if len(rolling_vals) > 4:
-                    rolling_vals.pop(0)
+                if len(rolling_vals) > 4: rolling_vals.pop(0)
             
             # Create date index
             last_date = series.index[-1]
             forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='W-MON')
             forecast_series = pd.Series(predictions, index=forecast_dates)
             
-            # Calculate accuracy via backtest (returns MAE and R² now)
+            # Metrics (simplified backtest for speed or just reuse model score?)
+            # Valid backtest requires re-training. 
+            # We'll use the training error/score as proxy or run a quick check.
             mae, r_squared = self._calculate_backtest_accuracy(series, model_type='xgboost')
             
-            print(f"  ✓ {model_name} fitted. MAE: ${mae/1e6:.2f}M, R²: {r_squared:.2f}")
             return forecast_series, mae, r_squared
             
         except Exception as e:
@@ -1024,115 +1061,158 @@ class CashFlowAnalyzer:
 
     def detect_anomalies(self):
         """
-        Detect anomalies using Multi-Variate Logic:
-        1. Statistical Spikes (3-Sigma Z-Score on Weekly Totals)
-        2. Duplicate Payments (Exact Match on Vendor + Date + Amount)
+        Detect anomalies using Advanced Multi-Variate Logic:
+        1. Statistical Anomalies (Isolation Forest)
+        2. Holiday Activity (Calendar-Aware Check)
         3. Round Number Risk (Manual Entry Flag)
-        4. Weekend Activity (Unusual Timing)
+        4. Duplicate Payments (Exact Match)
         """
-        print("\n=== ADVANCED ANOMALY DETECTION (DSS MODULE) ===")
+        print("\n=== ADVANCED ANOMALY DETECTION (ISOLATION FOREST + HOLIDAYS) ===")
         
         # Initialize
         self.df['anomaly_type'] = None
-        self.anomaly_metrics = {} # Store stats for plotting (Bands)
+        self.anomaly_metrics = {} # Store stats for plotting
         
-        # 1. Volume Spikes (3-Sigma Visualization Logic)
-        # ---------------------------------------------
-        print("  • Calculating Volatility Bands (3-Sigma)...")
-        # Ensure we have weekly data
-        if self.weekly_data is not None:
-             # Aggregate Total Flow by Week
-             weekly_ts = self.weekly_data.groupby('week')['weekly_amount_usd'].sum()
-             
-             # Calculate Rolling Stats (Window=8 weeks for trend adaptation)
-             rolling_mean = weekly_ts.rolling(window=8, min_periods=4).mean()
-             rolling_std = weekly_ts.rolling(window=8, min_periods=4).std()
-             
-             # Fill logic for early periods (backfill)
-             rolling_mean = rolling_mean.bfill()
-             rolling_std = rolling_std.bfill()
-             
-             # Define Bounds
-             # 2-Sigma = Safe Zone Boundary
-             # 3-Sigma = Anomaly Trigger
-             self.anomaly_metrics['ts_index'] = weekly_ts.index
-             self.anomaly_metrics['ts_values'] = weekly_ts.values
-             self.anomaly_metrics['safe_upper'] = rolling_mean + 2 * rolling_std
-             self.anomaly_metrics['safe_lower'] = rolling_mean - 2 * rolling_std
-             
-             # Identify Spikes (> 3 Sigma)
-             # Align indices
-             spikes = []
-             for idx, val in weekly_ts.items():
-                 if idx in rolling_mean.index:
-                     mean = rolling_mean.loc[idx]
-                     std = rolling_std.loc[idx]
-                     
-                     z_score = (val - mean) / std if std > 0 else 0
-                     if abs(z_score) > 2: # Redefined: Anything outside Safe Zone (2-Sigma) is an Anomaly
-                         spikes.append((idx, val, f"Outlier ({z_score:.1f}σ) - Outside Safe Zone"))
-             
-             # Save spikes for plotting (separate list)
-             self.anomaly_metrics['spikes'] = spikes
-             
-             # Also tag in main DF? Only if we can map back to transactions. 
-             # Spikes are often aggregate anomalies. We'll map them to the "Week" generally.
-        
-        # 2. Duplicate Payments (Vendor + Date + Amount)
-        # ---------------------------------------------
-        print("  • Scanning for Duplicate Payments (Vendor-Match)...")
-        if all(col in self.df.columns for col in ['Amount in USD', 'posting_date', 'Name']):
-             # Non-zero
-             mask_real = self.df['Amount in USD'].abs() > 10.0
-             dupe_cols = ['Amount in USD', 'posting_date', 'Name'] # Strict check
-             
-             duplicates = self.df[mask_real].duplicated(subset=dupe_cols, keep=False)
-             self.df.loc[duplicates & mask_real, 'anomaly_type'] = 'Duplicate Payment'
-             
-        # 3. Round Number Risk (Manual Entry Checks)
-        # ---------------------------------------------
-        print("  • Scanning for Round Number (Manual Entry Risk)...")
+        # Ensure data exists
+        if self.df.empty: return
+
+        # --- 1. ISOLATION FOREST (Statistical Outliers) ---
+        print("  • Training Isolation Forest Model...")
+        if 'Amount in USD' in self.df.columns and 'posting_date' in self.df.columns:
+            # Feature Engineering
+            # Explicitly align index with self.df
+            features = pd.DataFrame(index=self.df.index)
+            
+            # A. Amount (Normalized)
+            scaler = StandardScaler()
+            # Work with absolute amounts for volume anomalies, OR signed? 
+            # Usually magnitude is the anomaly.
+            amt_reshaped = self.df['Amount in USD'].fillna(0).values.reshape(-1, 1)
+            features['amount_scaled'] = scaler.fit_transform(amt_reshaped).flatten()
+            
+            # B. Temporal Features
+            features['week_of_year'] = self.df['posting_date'].dt.isocalendar().week
+            features['day_of_week'] = self.df['posting_date'].dt.dayofweek
+            
+            # C. Category Encoding
+            if 'Category' in self.df.columns:
+                features['category_encoded'] = pd.factorize(self.df['Category'])[0]
+            else:
+                features['category_encoded'] = 0
+                
+            # Train Model
+            # contamination=0.05 (Top 5% outliers)
+            iso_forest = IsolationForest(contamination=0.05, random_state=42)
+            features = features.fillna(0)
+            
+            try:
+                preds = iso_forest.fit_predict(features) # -1 is anomaly
+                
+                # Flag Anomalies (Only if not already flagged, though this is first step)
+                mask_anomaly = preds == -1
+                self.df.loc[mask_anomaly, 'anomaly_type'] = 'Statistical Anomaly (IsoForest)'
+                
+                # Store outliers for visualization
+                outliers = self.df[mask_anomaly]
+                print(f"    - Detected {len(outliers)} statistical anomalies.")
+                
+            except Exception as e:
+                print(f"    - Isolation Forest failed: {e}")
+
+        # --- 2. HOLIDAY DETECTION (Dynamic Market) ---
+        print("  • Checking for Holiday Activity...")
+        if HAS_HOLIDAYS and 'posting_date' in self.df.columns:
+            # Strategy: Identify Countries from Name (e.g., TW10 -> TW) or default to US/UK
+            # We will create a composite holiday set for all found countries
+            
+            dataset_holidays = set()
+            years = self.df['posting_date'].dt.year.unique()
+            
+            # Attempt to guess countries from 'Name' column if it exists
+            countries_found = set()
+            if 'Name' in self.df.columns:
+                # Assuming Name contains code like 'TW10', 'US01' etc.
+                # Extract first 2 letters
+                potential_codes = self.df['Name'].dropna().astype(str).str[:2].unique()
+                for code in potential_codes:
+                    if code in holidays.list_supported_countries():
+                        countries_found.add(code)
+            
+            if not countries_found:
+                countries_found = {'US', 'GB'} # Default fallback
+                print("    - No specific country codes found, defaulting to US/GB.")
+            else:
+                print(f"    - detected markets: {countries_found}")
+
+            # Build Holiday Index
+            for country in countries_found:
+                try:
+                    ctry_holidays = holidays.Country(country, years=years)
+                    dataset_holidays.update(ctry_holidays.keys())
+                except:
+                    continue
+            
+            # Check dates
+            # Helper to check if date is in holiday set
+            # dataset_holidays contains date objects
+            def is_holiday(d):
+                return d.date() in dataset_holidays
+
+            mask_holiday = self.df['posting_date'].apply(is_holiday)
+            
+            # Label as 'Holiday Activity' if detected and NOT already a specific type (or override?)
+            # User said: "Flag transactions occurring on holidays as 'Holiday Activity'"
+            # Priority: IsoForest > Holiday? Or Holiday explains IsoForest?
+            # Let's say Holiday is a specific explanation. If it's IsoForest AND Holiday, maybe "Holiday Outlier"?
+            # Simplicity: Overwrite or use if None
+            
+            # New tag: If it was IsoForest, maybe it's just Holiday Activity (Expected anomaly?)
+            # Or keep separate. Let's flag "Holiday Activity" for ANY transaction on holiday.
+            
+            # Overwrite prioritization: Holiday > IsoForest (Descriptive > Statistical)
+            self.df.loc[mask_holiday, 'anomaly_type'] = 'Holiday Activity'
+            print(f"    - Flagged {mask_holiday.sum()} transactions on public holidays.")
+
+        # --- 3. DUPLICATE PAYMENTS ---
+        print("  • Scanning for POTENTIAL Duplicate Payments...")
+        # STRATEGY: Trust the Cleaned CSV Flag (Per-Entity Check Logic)
+        if 'is_potential_duplicate' in self.df.columns:
+             mask_dupes = self.df['is_potential_duplicate'] == True
+             self.df.loc[mask_dupes, 'anomaly_type'] = 'Duplicate Payment'
+             print(f"    - Flagged {mask_dupes.sum()} duplicates (Source: Cleaned Data).")
+        else:
+             # Fallback if flag missing (legacy safety)
+             dupe_cols = ['Amount in USD', 'posting_date', 'Name']
+             if all(col in self.df.columns for col in dupe_cols):
+                 duplicates = self.df.duplicated(subset=dupe_cols, keep=False)
+                 self.df.loc[duplicates, 'anomaly_type'] = 'Duplicate Payment'
+                 print(f"    - Flagged {duplicates.sum()} duplicates (Runtime Recalculation).")
+
+        # --- 4. ROUND NUMBERS (Keep Logic) ---
+        print("  • Scanning for Round Number Risk...")
         if 'Amount in USD' in self.df.columns:
-            # Check > 1000 and Divisible by 1000
             is_round = (self.df['Amount in USD'].abs() > 1000) & (self.df['Amount in USD'].abs() % 1000 == 0)
-            # Only tag if not already a Duplicate
-            self.df.loc[is_round & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Round Number Risk'
-            
-        # 4. Weekend Activity (LOWEST PRIORITY - only if no other anomaly)
-        # But: If weekend is ALSO a volume outlier, label as Outlier (higher priority)
-        # ---------------------------------------------
-        print("  • Scanning for Weekend Transactions...")
-        if 'posting_date' in self.df.columns:
-            is_weekend = self.df['posting_date'].dt.dayofweek >= 5
-            
-            # Check if weekend week is also a volume outlier
-            if self.anomaly_metrics and 'spikes' in self.anomaly_metrics:
-                outlier_weeks = [s[0] for s in self.anomaly_metrics['spikes']]
-                # Mark weekend transactions in outlier weeks as Outlier (not Weekend)
-                for wk in outlier_weeks:
-                    mask_week = self.df['week'] == wk
-                    self.df.loc[is_weekend & mask_week & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Outlier (Weekend)'
-            
-            # Remaining weekends without other anomaly -> Weekend Activity
-            self.df.loc[is_weekend & (self.df['anomaly_type'].isna()), 'anomaly_type'] = 'Weekend Activity'
-
-
+            # Only tag if not already a Duplicate or Holiday (Keep Holiday/Duplicate as higher info)
+            # Actually, User said: "Keep Round Number Risk logic exactly as is."
+            # Previous logic: "Only tag if not already a Duplicate" (and implicit not already valid?)
+            # I will preserve lower priority than Duplicate.
+            mask_empty = self.df['anomaly_type'].isna()
+            self.df.loc[is_round & mask_empty, 'anomaly_type'] = 'Round Number Risk'
+        
         # Consolidate Risks
         self.anomalies = self.df[self.df['anomaly_type'].notna()].copy()
         
-        # Risk Scoring for Table
+        # Risk Scoring
         risk_map = {
-            'Duplicate Payment': 3,
+            'Duplicate Payment': 4,
+            'Statistical Anomaly (IsoForest)': 3,
             'Round Number Risk': 2,
-            'Weekend Activity': 1
+            'Holiday Activity': 1
         }
         self.anomalies['risk_score'] = self.anomalies['anomaly_type'].map(risk_map)
         self.anomalies = self.anomalies.sort_values(by=['risk_score', 'Amount in USD'], ascending=[False, False])
         
-        print(f"DSS Alert: Found {len(self.anomalies)} transactional anomalies.")
-        if 'spikes' in self.anomaly_metrics:
-             print(f"           Found {len(self.anomaly_metrics['spikes'])} Volume Spikes (3-Sigma).")
-        
+        print(f"DSS Alert: Found {len(self.anomalies)} anomalies total.")
         return True
 
     def analyze_trapped_capital(self):
@@ -1593,7 +1673,7 @@ class CashFlowAnalyzer:
         opt_metrics = self.analyze_trapped_capital()
         risk_history = self.analyze_historical_roots()
         
-        AZ = {'magenta': '#D0006F', 'mulberry': '#830051', 'lime': '#C4D600', 'navy': '#003865', 'platinum': '#EBEFEE', 'blue': '#68D2DF', 'gold': '#F0AB00'}
+        AZ = {'magenta': '#D0006F', 'mulberry': '#830051', 'lime': '#C4D600', 'navy': '#003865', 'platinum': '#EBEFEE', 'blue': '#68D2DF', 'gold': '#F0AB00', 'purple': '#3C1053'}
         c_text, c_pos, c_neg = AZ['navy'], AZ['lime'], AZ['magenta']
         
         def style_fig(fig, title):
@@ -1604,73 +1684,311 @@ class CashFlowAnalyzer:
 
         figures_html = []
         
-        # --- FIG 0: ANOMALY + WEEKEND (SAFE ZONE OVERLAY) ---
+        # --- GLOBAL METRIC CALCULATION (Single Source of Truth) ---
+        # Calculate Duplicates ONCE for consistency across Map, Metrics, Action Plan, Brief
+        # USE ABSOLUTE VALUE: Risk is the magnitude of error, regardless of inflow/outflow sign.
+        dupes_all = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment'] if self.anomalies is not None else pd.DataFrame()
+        self.verified_dupe_sum = dupes_all['Amount in USD'].abs().sum() if not dupes_all.empty else 0
+        self.verified_dupe_count = len(dupes_all)
+        
+        # --- FIG 0: ENHANCED TIMELINE - CASH FLOW & RISK ANALYSIS ---
         f0 = go.Figure()
-        if self.anomaly_metrics:
-            idx, upper, lower, vals = self.anomaly_metrics['ts_index'], self.anomaly_metrics['safe_upper'], self.anomaly_metrics['safe_lower'], self.anomaly_metrics['ts_values']
-            f0.add_trace(go.Scatter(x=pd.concat([pd.Series(idx), pd.Series(idx)[::-1]]), y=pd.concat([upper, lower[::-1]]), fill='toself', fillcolor='rgba(0,56,101,0.05)', line=dict(color='rgba(0,0,0,0)'), name='Safe Zone (2σ)', hoverinfo="skip"))
-            f0.add_trace(go.Scatter(x=idx, y=vals, mode='markers', marker=dict(color='#B0B0B0', size=5), name='Normal', visible='legendonly'))
-            if 'spikes' in self.anomaly_metrics:
-                sx, sy = [x[0] for x in self.anomaly_metrics['spikes']], [x[1] for x in self.anomaly_metrics['spikes']]
-                f0.add_trace(go.Scatter(x=sx, y=sy, mode='markers', marker=dict(color=c_neg, size=10, line=dict(color='white', width=2)), name='Outlier'))
-                spike_dates = set(sx)
-            else:
-                spike_dates = set()
-                
-        # Weekend Transactions Overlay
-        wknd_data = self.df[self.df['posting_date'].dt.dayofweek >= 5].groupby('week')['Amount in USD'].sum()
         
-        # FILTER: If a point is already an Outlier, do NOT show as Weekend (Outlier > Weekend)
-        wknd_data = wknd_data[~wknd_data.index.isin(spike_dates)]
+        # Prepare MONTHLY data for clarity (not weekly - too cluttered)
+        if self.weekly_data is not None:
+            # Aggregate to monthly
+            df_monthly = self.df.copy()
+            df_monthly['month'] = pd.to_datetime(df_monthly['posting_date']).dt.to_period('M')
+            monthly_data = df_monthly.groupby('month').agg({
+                'Amount in USD': lambda x: x.sum()
+            }).reset_index()
+            monthly_data.columns = ['month', 'monthly_amount_usd']
+            monthly_data['month_start'] = monthly_data['month'].dt.start_time
+            monthly_data['month_num'] = range(1, len(monthly_data) + 1)
+            monthly_data['month_label'] = [m.strftime('%b %y') for m in monthly_data['month']]
+            
+            # 1. NET CASH FLOW LINE (Primary focus)
+            f0.add_trace(go.Scatter(
+                x=monthly_data['month_label'],
+                y=monthly_data['monthly_amount_usd'],
+                mode='lines+markers',
+                name='Net Cash Flow',
+                line=dict(color=AZ['navy'], width=4),
+                marker=dict(size=12, color=AZ['navy']),
+                hovertemplate='<b>%{x}</b><br>Net Flow: $%{y:,.0f}<extra></extra>',
+                yaxis='y'
+            ))
+            
+            # 2. INFLOW/OUTFLOW CONTEXT (Secondary - lighter)
+            monthly_flows = df_monthly.groupby('month').agg({
+                'Amount in USD': [lambda x: x[x > 0].sum(), lambda x: abs(x[x < 0].sum())]
+            }).reset_index()
+            monthly_flows.columns = ['month', 'inflow', 'outflow']
+            monthly_flows = monthly_data.merge(monthly_flows, on='month', how='left').fillna(0)
+            
+            f0.add_trace(go.Bar(
+                x=monthly_data['month_label'],
+                y=monthly_flows['inflow'],
+                name='Total Inflow',
+                marker_color='rgba(196, 214, 0, 0.3)',
+                hovertemplate='<b>%{x}</b><br>Inflow: $%{y:,.0f}<extra></extra>',
+                yaxis='y2',
+                showlegend=True
+            ))
+            
+            f0.add_trace(go.Bar(
+                x=monthly_data['month_label'],
+                y=monthly_flows['outflow'],
+                name='Total Outflow',
+                marker_color='rgba(208, 0, 111, 0.3)',
+                hovertemplate='<b>%{x}</b><br>Outflow: $%{y:,.0f}<extra></extra>',
+                yaxis='y2',
+                showlegend=True
+            ))
         
-        if not wknd_data.empty:
-            f0.add_trace(go.Scatter(x=wknd_data.index, y=wknd_data.values, mode='markers', marker=dict(color=AZ['gold'], size=8, symbol='diamond'), name='Weekend'))
-        # Round Number Risk Overlay (>$100K exact multiples of $1K)
-        round_mask = (self.df['Amount in USD'].abs() >= 100000) & (self.df['Amount in USD'].abs() % 1000 == 0)
-        round_data = self.df[round_mask].groupby('week')['Amount in USD'].sum()
-        if not round_data.empty:
-            f0.add_trace(go.Scatter(x=round_data.index, y=round_data.values, mode='markers', marker=dict(color='#FF6B35', size=10, symbol='square'), name='Round $'))
-        style_fig(f0, "Anomaly Check: Safe Zone + Round $ + Weekend")
+        # 3. MONTHLY ANOMALY INDICATORS (on separate axis)
+        if self.anomalies is not None and not self.anomalies.empty and self.weekly_data is not None:
+            # Aggregate anomalies by MONTH
+            anoms = self.anomalies.copy()
+            anoms['month'] = pd.to_datetime(anoms['posting_date']).dt.to_period('M')
+            
+            monthly_agg = anoms.groupby('month').agg({
+                'Amount in USD': ['count', lambda x: x.abs().sum()],
+                'anomaly_type': lambda x: ', '.join(x.unique()[:3])  # Top 3 types
+            }).reset_index()
+            monthly_agg.columns = ['month', 'count', 'total_value', 'types']
+            
+            # Merge with monthly data to get labels
+            monthly_agg = monthly_data.merge(monthly_agg, on='month', how='left')
+            monthly_agg = monthly_agg[monthly_agg['count'].notna()]
+            
+            # Risk severity markers
+            max_count = monthly_agg['count'].max() if len(monthly_agg) > 0 else 1
+            sizes = 25 + (monthly_agg['count'] / max_count * 45)  # 25-70px range
+            
+            f0.add_trace(go.Scatter(
+                x=monthly_agg['month_label'],
+                y=monthly_agg['count'],
+                mode='markers+text',
+                marker=dict(
+                    size=sizes,
+                    color=monthly_agg['count'],
+                    colorscale=[[0, 'rgba(255,200,200,0.6)'], [1, 'rgba(208,0,111,1.0)']],
+                    showscale=True,
+                    colorbar=dict(title='Risk<br>Count', thickness=15, len=0.3, y=0.2),
+                    line=dict(color='white', width=2)
+                ),
+                text=[f"{int(c)}" for c in monthly_agg['count']],
+                textposition='middle center',
+                textfont=dict(color='white', size=12, family='Arial Black'),
+                name='Anomalies Detected',
+                hovertemplate='<b>%{x}</b><br>Anomalies: %{y}<br>Value: $' + monthly_agg['total_value'].apply(lambda x: f"{x/1e6:.1f}M") + '<extra></extra>',
+                yaxis='y3'
+            ))
+        
+        # 4. THRESHOLD BAND (Normal Range)
+        if self.weekly_data is not None:
+            # Use monthly data for clearer average
+            avg = monthly_data['monthly_amount_usd'].mean()
+            std = monthly_data['monthly_amount_usd'].std()
+            
+            # Normal range annotation
+            f0.add_hrect(
+                y0=avg - std, y1=avg + std,
+                fillcolor='rgba(150,150,150,0.15)', 
+                line_width=0,
+                annotation_text=f'Normal Range (Avg ± Std Dev)<br>${avg/1e6:.1f}M ± ${std/1e6:.1f}M',
+                annotation_position='left',
+                annotation=dict(font=dict(size=9, color='#666')),
+                yref='y'
+            )
+        
+        # Add clear instruction box
+        f0.add_annotation(
+            text="<b>🔍 PRIORITY FOCUS:</b><br>"
+                 "1. <b>Dark blue line</b> = Net weekly cash position<br>"
+                 "2. <b>Red markers with numbers</b> = Weeks requiring investigation<br>"
+                 "3. Light bars show total money in/out (context only)<br>"
+                 "4. Grey zone = Typical week-to-week variation",
+            xref='paper', yref='paper',
+            x=0.98, y=0.02,
+            xanchor='right', yanchor='bottom',
+            showarrow=False,
+            align='left',
+            bgcolor='rgba(255,255,255,0.95)',
+            bordercolor=AZ['navy'],
+            borderwidth=2,
+            font=dict(size=10, color=AZ['navy'])
+        )
+        
+        style_fig(f0, "Monthly Cash Flow & Risk Analysis")
+        f0.update_layout(
+            height=550,
+            xaxis=dict(title='Month', tickangle=-45),
+            yaxis=dict(title='Net Cash Flow (USD)', side='left'),
+            yaxis2=dict(title='Total Inflow/Outflow (USD)', overlaying='y', side='right', showgrid=False, range=[0, max(monthly_flows['inflow'].max(), monthly_flows['outflow'].max()) * 1.2]),
+            yaxis3=dict(title='Anomaly Count', overlaying='y', side='right', position=0.95, showgrid=False),
+            showlegend=True,
+            legend=dict(x=0.01, y=0.99, bgcolor='rgba(255,255,255,0.9)'),
+            hovermode='x unified'
+        )
         figures_html.append(pio.to_html(f0, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
 
 
-        # --- FIG 1: ENTITY GEO BUBBLE MAP (Net Flow + Duplicates) ---
+        # --- FIG 1: CENTERPIECE MAP (SEPARATED TRACES) ---
         f1 = go.Figure()
         geo_map = {'TW10': ['Taiwan', 23.6, 120.9], 'PH10': ['Philippines', 12.8, 121.7], 'TH10': ['Thailand', 15.8, 100.9], 'ID10': ['Indonesia', -0.7, 113.9], 'SS10': ['Singapore', 1.3, 103.8], 'MY10': ['Malaysia', 4.2, 101.9], 'VN20': ['Vietnam', 14.0, 108.2], 'KR10': ['South Korea', 35.9, 127.7]}
         
-        # Net Flow by Entity
+        # Data Aggregation for Map
         net_by_ent = self.df.groupby('Name')['Net_Amount_USD'].sum() if 'Net_Amount_USD' in self.df.columns else pd.Series(dtype=float)
         
-        # Duplicate leakage by entity
+        # Risk Layers - Use Global Source of Truth to ensure consistency
+        # We still need groupby for per-country bubbles, but total should match verified_dupe_sum
         dupes_only = self.anomalies[self.anomalies['anomaly_type'] == 'Duplicate Payment'] if self.anomalies is not None else pd.DataFrame()
-        dupe_by_ent = dupes_only.groupby('Name')['Amount in USD'].sum() if not dupes_only.empty else pd.Series(dtype=float)
+        # ABSOLUTE SUM for Map Bubbles too (Consistency)
+        dupe_by_ent = dupes_only.groupby('Name')['Amount in USD'].apply(lambda x: x.abs().sum()) if not dupes_only.empty else pd.Series(dtype=float)
+        # self.verified_dupe_sum is already set globally
         
-        # Build bubble data
+        anoms_only = self.anomalies[self.anomalies['anomaly_type'] == 'Statistical Anomaly (IsoForest)'] if self.anomalies is not None else pd.DataFrame()
+        anom_by_ent = anoms_only.groupby('Name')['Amount in USD'].sum() if not anoms_only.empty else pd.Series(dtype=float)
+        
+        # Collect data for SEPARATED traces
+        net_surplus_lats, net_surplus_lons, net_surplus_sizes, net_surplus_text = [], [], [], []
+        net_deficit_lats, net_deficit_lons, net_deficit_sizes, net_deficit_text = [], [], [], []
+        anom_lats, anom_lons, anom_text = [], [], []
+        dupe_lats, dupe_lons, dupe_text = [], [], []
+        
         for code, info in geo_map.items():
             lat, lon, name = info[1], info[2], info[0]
             net_val = net_by_ent.get(code, 0)
             dupe_val = dupe_by_ent.get(code, 0)
+            anom_val = anom_by_ent.get(code, 0)
             
-            # Net Flow Bubble (Green = Profit, Magenta = Deficit)
+            # Forecast trend
+            fc_trend = "Stable"
+            if 'entities' in self.forecasts and code in self.forecasts['entities']:
+                fc = self.forecasts['entities'][code]['1month']
+                if not fc.empty:
+                    trend_val = (fc.mean() - fc.iloc[0]) / (abs(fc.iloc[0]) + 1)
+                    if trend_val > 0.05: fc_trend = "Growing"
+                    elif trend_val < -0.05: fc_trend = "Declining"
+            
+            # Helper for smart formatting
+            def smart_fmt(v):
+                av = abs(v)
+                if av >= 1e9: return f"${v/1e9:.1f}B"
+                elif av >= 1e6: return f"${v/1e6:.1f}M"
+                elif av >= 1e3: return f"${v/1e3:.0f}K"
+                else: return f"${v:.0f}"
+
+            # 1. Net Flow Bubbles (SEPARATED by surplus/deficit)
             if net_val != 0:
-                color = c_pos if net_val > 0 else c_neg
-                label = f"{name}: ${net_val/1e6:+.1f}M"
-                size = max(12, min(50, abs(net_val)/1e5))
-                f1.add_trace(go.Scattergeo(lat=[lat], lon=[lon], text=[label], marker=dict(size=size, color=color, opacity=0.7, line=dict(color='white', width=1)), mode='markers+text', textposition='top center', textfont=dict(size=9, color=c_text), name=f'{name} Net', showlegend=False))
+                size = max(20, min(70, abs(net_val)/4e4))
+                text = f"<b>{name}</b><br>Net: {smart_fmt(net_val)}<br>Trend: {fc_trend}"
+                
+                if net_val > 0:
+                    net_surplus_lats.append(lat)
+                    net_surplus_lons.append(lon)
+                    net_surplus_sizes.append(size)
+                    net_surplus_text.append(text)
+                else:
+                    net_deficit_lats.append(lat)
+                    net_deficit_lons.append(lon)
+                    net_deficit_sizes.append(size)
+                    net_deficit_text.append(text)
             
-            # Duplicate Bubble (Gold/Yellow - slightly offset for visibility)
-            if dupe_val > 0:
-                label = f"⚠ ${dupe_val/1e6:.1f}M"
-                size = max(8, min(30, dupe_val/1e4))
-                f1.add_trace(go.Scattergeo(lat=[lat-0.5], lon=[lon+1], text=[label], marker=dict(size=size, color=AZ['gold'], opacity=0.9, symbol='diamond', line=dict(color='white', width=1)), mode='markers+text', textposition='bottom center', textfont=dict(size=8, color=AZ['gold']), name=f'{name} Dup', showlegend=False))
+            # 2. Anomalies (SEPARATE trace)
+            if anom_val > 0:
+                anom_lats.append(lat)
+                anom_lons.append(lon)
+                anom_text.append(f"<b>{name}</b><br>Anomalies: {smart_fmt(anom_val)}")
+            
+            # 3. Duplicates (SEPARATE trace)
+            # Only show if value is material (> $10k) to avoid clutter
+            if dupe_val > 10000:
+                dupe_lats.append(lat - 0.8)
+                dupe_lons.append(lon + 1.5)
+                dupe_text.append(f"<b>{name}</b><br>Duplicates: {smart_fmt(dupe_val)}")
         
-        # Legend entries
-        f1.add_trace(go.Scattergeo(lat=[None], lon=[None], marker=dict(size=10, color=c_pos), name='Profit (Net+)'))
-        f1.add_trace(go.Scattergeo(lat=[None], lon=[None], marker=dict(size=10, color=c_neg), name='Deficit (Net-)'))
-        f1.add_trace(go.Scattergeo(lat=[None], lon=[None], marker=dict(size=10, color=AZ['gold'], symbol='diamond'), name='Duplicates'))
+        # Add SEPARATED traces (each toggleable independently)
+        # Net Surplus
+        if net_surplus_lats:
+            f1.add_trace(go.Scattergeo(
+                lat=net_surplus_lats, lon=net_surplus_lons,
+                mode='markers',
+                marker=dict(size=net_surplus_sizes, color=c_pos, opacity=0.85, line=dict(color='white', width=2)),
+                name='Net Surplus',
+                text=net_surplus_text,
+                hovertemplate='%{text}<extra></extra>'
+            ))
         
-        f1.update_geos(projection_type="natural earth", scope="asia", showland=True, landcolor="rgba(235, 239, 238, 0.7)", showcountries=True, countrycolor="#CCC")
-        style_fig(f1, "Entity Cash Flow Map: Net + Duplicates")
+        # Net Deficit
+        if net_deficit_lats:
+            f1.add_trace(go.Scattergeo(
+                lat=net_deficit_lats, lon=net_deficit_lons,
+                mode='markers',
+                marker=dict(size=net_deficit_sizes, color=c_neg, opacity=0.85, line=dict(color='white', width=2)),
+                name='Net Deficit',
+                text=net_deficit_text,
+                hovertemplate='%{text}<extra></extra>'
+            ))
+        
+        # Anomaly Detected (RED RING overlay - SCALED to match bubble)
+        if anom_lats:
+            f1.add_trace(go.Scattergeo(
+                lat=anom_lats, lon=anom_lons,
+                mode='markers',
+                marker=dict(
+                    size=[s + 10 for s in [max(20, min(70, abs(net_by_ent.get(code, 0))/4e4)) for code in [k for k, v in geo_map.items() if anom_by_ent.get(k, 0) > 0]]], # Match bubble size + 10px for ring
+                    color='rgba(0,0,0,0)', 
+                    line=dict(color='red', width=4)
+                ),
+                name='Anomaly Detected',
+                text=anom_text,
+                hovertemplate='%{text}<extra></extra>'
+            ))
+        
+        # Duplicate Risk (GOLD DIAMOND)
+        if dupe_lats:
+            f1.add_trace(go.Scattergeo(
+                lat=dupe_lats, lon=dupe_lons,
+                mode='markers',
+                marker=dict(size=16, color=AZ['gold'], symbol='diamond', line=dict(color='white', width=2)),
+                name='Duplicate Risk',
+                text=dupe_text,
+                hovertemplate='%{text}<extra></extra>'
+            ))
+
+        
+        f1.update_geos(
+            projection_type="natural earth",
+            projection_scale=1.4,  # ZOOM IN to fill space better
+            center=dict(lat=15, lon=115),  # Center on SE Asia
+            showland=True, 
+            landcolor="#F4F7F6", 
+            showcountries=True, 
+            countrycolor="#D1D5DB",
+            showocean=False, # Transparent ocean
+            showcoastlines=True,
+            coastlinecolor="#999",
+            bgcolor='rgba(0,0,0,0)' # Transparent Geo background
+        )
+        
+        # Centerpiece Styling: No margins, clean look, TRANSPARENT
+        style_fig(f1, "Regional Cash Flow Intelligence (Net Flow & Risk Layers)")
+        f1.update_layout(
+            height=750,  # Even taller
+            margin=dict(l=0, r=0, t=40, b=0),
+            paper_bgcolor='rgba(0,0,0,0)', # Transparent paper
+            plot_bgcolor='rgba(0,0,0,0)', # Transparent plot area
+            legend=dict(
+                x=0.02, y=0.98, 
+                bgcolor='rgba(255,255,255,0.95)', 
+                bordercolor='#999', 
+                borderwidth=1,
+                font=dict(size=11)
+            )
+        )
         figures_html.append(pio.to_html(f1, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
 
@@ -1770,16 +2088,52 @@ class CashFlowAnalyzer:
         figures_html.append(pio.to_html(f3, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
 
-        # --- FIG 4: CATEGORY ANALYSIS (Inflow/Outflow Breakdown) ---
+        # --- FIG 4: CATEGORY ANALYSIS (Improved Visualization) ---
         f4 = go.Figure()
         if 'Category' in self.df.columns and 'Net_Amount_USD' in self.df.columns:
-            cat_flow = self.df.groupby('Category')['Net_Amount_USD'].sum().sort_values()
-            colors = [c_pos if v > 0 else c_neg for v in cat_flow.values]
-            f4.add_trace(go.Bar(y=cat_flow.index, x=cat_flow.values, orientation='h', marker_color=colors, text=[f"${v/1e6:.1f}M" for v in cat_flow.values], textposition='outside'))
-            f4.update_layout(xaxis_title="Net Cash Flow (USD)", yaxis_title="Category", showlegend=False)
-        style_fig(f4, "Category Analysis (Inflow/Outflow)")
-        f4.update_layout(height=500)
-        figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
+            # 1. Aggregation
+            cat_agg = self.df.groupby('Category')['Net_Amount_USD'].sum()
+            
+            # 2. Sort by Absolute Value (Magnitude)
+            cat_agg_sorted = cat_agg.iloc[cat_agg.abs().argsort()[::-1]]
+            
+            # Show top 15 + Others for better readability
+            if len(cat_agg_sorted) > 15:
+                top_cats = cat_agg_sorted.head(15)
+                others_val = cat_agg_sorted.iloc[15:].sum()
+                final_cats = top_cats.copy()
+                final_cats['Other Categories'] = others_val
+            else:
+                final_cats = cat_agg_sorted
+            
+            # Visual Data Preparation (Reverse for Bar Chart)
+            plot_cats = final_cats.index[::-1]
+            plot_vals = final_cats.values[::-1]
+            colors = [c_pos if v > 0 else c_neg for v in plot_vals]
+            
+            # Better spacing
+            f4.add_trace(go.Bar(
+                y=plot_cats, 
+                x=plot_vals, 
+                orientation='h', 
+                marker=dict(color=colors, line=dict(width=0)),
+                text=[f"${v/1e6:+.1f}M" for v in plot_vals], 
+                textposition='outside',
+                textfont=dict(size=11),
+                hovertemplate='<b>%{y}</b><br>Net: $%{x:,.0f}<extra></extra>'
+            ))
+            
+            f4.update_layout(
+                xaxis_title="Net Cash Flow (USD)", 
+                yaxis_title=None, 
+                showlegend=False,
+                height=650,  # Fixed height for better fit
+                margin=dict(l=220, r=100, t=40, b=60),
+                yaxis=dict(tickfont=dict(size=11))
+            )
+            
+        style_fig(f4, "Top Cash Flow Categories (Net Impact)")
+        figures_html.append(pio.to_html(f4, full_html=False, include_plotlyjs='cdn', config={'displayModeBar': False}))
 
         # --- FIG 5: FORECAST ACCURACY (Actual vs Predicted) ---
         f5 = go.Figure()
@@ -1833,61 +2187,164 @@ class CashFlowAnalyzer:
         f5.update_layout(height=400, xaxis_title="Week", yaxis_title="Net Cash Flow (USD)")
         figures_html.append(pio.to_html(f5, full_html=False, include_plotlyjs=False, config={'displayModeBar': False}))
 
+        # --- FIG 6: REMOVED (Metrics only) ---
+        # Efficiency is now shown in top cards only as per request.
+        # But we must keep the list index consistent if downstream code relies on index? 
+        # Actually proper way is to just NOT append it and update HTML construction.
+        # I will append a dummy or simple text to avoid breaking index if I don't update HTML perfectly, 
+        # BUT I AM UPDATING HTML PERFECTLY. So I will skip appending fig 6.
+        # WAIT: The HTML layout code I write next MUST match the indices. 
+        # Current indices: 0(Anom), 1(Map), 2(1M), 3(6M), 4(Cat), 5(Acc)
+        # Old indices: 0,1,2,3,4,5,6. 
+        # So I will stop appending here.
 
 
 
 
 
-        # METRICS
+
+
+        # METRICS - Use consistent duplicate source
         total_in = self.df[self.df['Amount in USD'] > 0]['Amount in USD'].sum()
         total_out = abs(self.df[self.df['Amount in USD'] < 0]['Amount in USD'].sum())
         kpi_eff = total_in / total_out if total_out > 0 else 0
         burn_rate = total_out / 52
-        dupe_val = dupe_by_ent.sum() if not dupe_by_ent.empty else 0
+        
+        # UNIFIED DUPLICATE VALUE - From Global Calculation
+        dupe_val_unified = self.verified_dupe_sum
+        dupe_cnt_final = self.verified_dupe_count
 
-        # ACTION TABLE (Issue | Action | Priority - Clickable)
-        # Round Number Risk: Large exact amounts suggest manual entry
+        # ACTION TABLE - COMPREHENSIVE
+        # Duplicates handled above
+        
         round_mask = (self.df['Amount in USD'].abs() >= 100000) & (self.df['Amount in USD'].abs() % 1000 == 0)
         round_cnt = round_mask.sum()
         round_val = self.df.loc[round_mask, 'Amount in USD'].abs().sum()
         
-        table_html = "<table class='action-table'><thead><tr><th>Issue</th><th>Action (Based on Past Data)</th><th>Priority</th><th></th></tr></thead><tbody>"
+        # Get anomaly breakdown
+        iso_cnt = len(self.anomalies[self.anomalies['anomaly_type'] == 'Statistical Anomaly (IsoForest)']) if self.anomalies is not None else 0
+        holiday_cnt = len(self.anomalies[self.anomalies['anomaly_type'] == 'Holiday Activity']) if self.anomalies is not None else 0
+        
+        table_html = "<table class='action-table'><thead><tr><th>Detected Issue</th><th>Root Cause / Context</th><th>Suggested Action</th><th>Priority</th><th></th></tr></thead><tbody>"
         actions = []
-        if dupe_val > 0:
-            actions.append((f"Duplicates: ${dupe_val/1e6:.1f}M ({len(dupe_by_ent)} entities)", "Audit vendor invoices", "High", "c1"))
+        
+        # DUPLICATES
+        if dupe_cnt_final > 0:
+            actions.append((
+                f"Potential Duplicates: ${dupe_val_unified/1e6:.1f}M",
+                f"{dupe_cnt_final} transactions flagged (Same Amount+Date+Vendor heuristic)",
+                "Audit vendor invoices & payment logs for double-payments",
+                "High",
+                "c1"
+            ))
+        
+        # STATISTICAL ANOMALIES
+        if iso_cnt > 0:
+            iso_val = self.anomalies[self.anomalies['anomaly_type'] == 'Statistical Anomaly (IsoForest)']['Amount in USD'].abs().sum()
+            actions.append((
+                f"ML-Detected Anomalies: {iso_cnt} items",
+                f"Isolation Forest flagged ${iso_val/1e6:.1f}M in unusual transactions",
+                "Review transaction patterns & source documents",
+                "High",
+                "c0"
+            ))
+        
+        # ROUND NUMBERS
         if round_cnt > 0:
-            actions.append((f"Round Numbers: ${round_val/1e6:.1f}M ({round_cnt} txns)", "Verify supporting docs", "Medium", "c0"))
+            actions.append((
+                f"Round Number Risk: ${round_val/1e6:.1f}M",
+                f"{round_cnt} exact amounts (×1000) suggest manual entry",
+                "Verify invoices & supporting documents",
+                "Medium",
+                "c0"
+            ))
+        
+        # HOLIDAY TRANSACTIONS
+        if holiday_cnt > 0:
+            holiday_val = self.anomalies[self.anomalies['anomaly_type'] == 'Holiday Activity']['Amount in USD'].abs().sum()
+            actions.append((
+                f"Holiday Activity: {holiday_cnt} txns",
+                f"${holiday_val/1e6:.1f}M processed on public holidays (backdating risk)",
+                "Check posting date accuracy",
+                "Medium",
+                "c0"
+            ))
 
-        # Weekend Risk: Transactions on Sat/Sun
-        wknd_mask = (self.df['posting_date'].dt.dayofweek >= 5)
-        wknd_cnt = wknd_mask.sum()
-        wknd_val = self.df.loc[wknd_mask, 'Amount in USD'].sum()
-        if wknd_cnt > 0:
-             actions.append((f"Weekend Activity: ${wknd_val/1e6:.1f}M ({wknd_cnt} txns)", "Check posting dates", "Medium", "c0"))
+        # EFFICIENCY ALERT
+        if kpi_eff < 1.0:
+            actions.append((
+                f"Low Efficiency: {kpi_eff:.2f}x",
+                f"Outflows exceed inflows (Burn Rate: ${burn_rate/1e6:.1f}M/week)",
+                "Review cost structure & accelerate receivables",
+                "High",
+                "c0"
+            ))
 
-        if hasattr(self, 'anomaly_metrics') and 'spikes' in self.anomaly_metrics:
-            for idx, val, desc in self.anomaly_metrics['spikes']:
-                date_str = idx.strftime('%Y-%m-%d') if hasattr(idx, 'strftime') else str(idx).split(' ')[0]
-                actions.append((f"Anomaly: ${val/1e6:.1f}M on {date_str}", "Investigate volume spike", "High", "c0"))
+        # PEAK ANOMALY MONTH (October Insight)
+        # Find month with max anomaly count from monthly_agg calculated for Fig 0
+        # Re-calculate checks since local var might not be available or scope issue
+        if self.anomalies is not None and not self.anomalies.empty:
+            anoms_check = self.anomalies.copy()
+            anoms_check['month'] = pd.to_datetime(anoms_check['posting_date']).dt.to_period('M')
+            m_counts = anoms_check.groupby('month').size()
+            if not m_counts.empty:
+                peak_month_idx = m_counts.idxmax()
+                peak_count = m_counts.max()
+                peak_month_str = peak_month_idx.strftime('%b %Y')
+                
+                # Check if it stands out (e.g., > 1.5x average)
+                if peak_count > m_counts.mean() * 1.5:
+                     actions.append((
+                        f"Risk Spike: {peak_month_str}",
+                        f"Anomaly count ({int(peak_count)}) is {peak_count/m_counts.mean():.1f}x higher than average",
+                        f"Deep dive into {peak_month_str} transaction logs",
+                        "High",
+                        "c0"
+                    ))
+
+        # TOP COST DRIVER INSIGHT (New Request)
+        if 'Category' in self.df.columns and 'Net_Amount_USD' in self.df.columns:
+             # Re-use aggregation logic or re-calculate locally
+             cat_agg_net = self.df.groupby('Category')['Net_Amount_USD'].sum()
+             # Filter for outflows (negative net)
+             outflows = cat_agg_net[cat_agg_net < 0].abs()
+             if not outflows.empty:
+                 top_cat = outflows.idxmax()
+                 top_val = outflows.max()
+                 
+                 # Only flag if significant (> $5M)
+                 if top_val > 5000000:
+                     actions.append((
+                        f"Primary Cost Driver: {top_cat}",
+                        f"Largest outflow category accounting for ${top_val/1e6:.1f}M",
+                        f"Review {top_cat} spending efficiency",
+                        "High" if top_val > 20000000 else "Medium",
+                        "c0"
+                    ))
+
+        # Add forecast risks
 
 
-        # Add ALL forecast dips with RCA
+        # Add forecast risks
         for r in risk_1m:
-            # Parse the dip info: "Week X: Dip to $YM (Category)"
+            # Parse the dip info
             parts = r.split('(')
             week_info = parts[0].strip() if parts else r
             cat_driver = parts[1].replace(')', '') if len(parts) > 1 else "Mixed"
-            week_info = parts[0].strip() if parts else r
-            cat_driver = parts[1].replace(')', '') if len(parts) > 1 else "Mixed"
-            actions.append((week_info, f"Check {cat_driver} trends", "High", "c2"))
+            actions.append((
+                f"Forecast Dip: {week_info}",
+                f"Projected cash flow decline driven by {cat_driver}",
+                f"Plan liquidity buffer & review {cat_driver} obligations",
+                "High",
+                "c2"
+            ))
         
         # PRIORITIZE: High > Medium > Low
-        # Custom sort key: High=0, Medium=1, Low=2
         prio_map = {'High': 0, 'Medium': 1, 'Low': 2}
-        actions.sort(key=lambda x: prio_map.get(x[2], 99))
+        actions.sort(key=lambda x: prio_map.get(x[3], 99))
 
-        for issue, action, prio, target in actions:
-            table_html += f"<tr class='action-row' onclick=\"focusChart('{target}')\"><td>{issue}</td><td>{action}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td><td>→</td></tr>"
+        for issue, context, action, prio, target in actions:
+            table_html += f"<tr class='action-row' onclick=\"focusChart('{target}')\"><td><b>{issue}</b><br><small style='color:#666'>{context}</small></td><td>{action}</td><td><span class='prio-tag p-{prio.lower()}'>{prio}</span></td><td>→</td></tr>"
         table_html += "</tbody></table>"
 
 
@@ -1903,7 +2360,10 @@ class CashFlowAnalyzer:
         outlook_html = "<div style='margin-top:15px;'><b>📈 Future Outlook:</b><ul style='margin:5px 0 0 20px;'>"
         for r in risk_6m: outlook_html += f"<li>{r}</li>"
         outlook_html += "</ul></div>"
-
+        
+        # Consistent Data for Brief (Recalculate to be sure)
+        map_dupe_val = dupe_val_unified # Use unified value
+        
         # ASSEMBLE HTML 
         # Prepare forecast KPI values
         fc_1m_sum = self.forecast_metrics.get('1m_sum', 0) if hasattr(self, 'forecast_metrics') else 0
@@ -1936,8 +2396,8 @@ class CashFlowAnalyzer:
                 .m-val {{ font-size: 26px; font-weight: 900; color: {AZ['mulberry']}; }}
                 .m-label {{ font-size: 10px; text-transform: uppercase; font-weight: bold; opacity: 0.7; }}
                 .m-desc {{ font-size: 9px; color: #666; margin-top: 6px; line-height: 1.3; }}
-                .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }}
-                .card {{ background: white; border-radius: 10px; padding: 8px; border: 1px solid #DDD; transition: all 0.3s; }}
+                .grid {{ display: grid; grid-template-columns: repeat(12, 1fr); row-gap: 50px; column-gap: 20px; }} /* Generous row gap for breathing room */
+                .card {{ background: white; border-radius: 10px; padding: 10px; border: 1px solid #DDD; transition: all 0.3s; height: 100%; }}
                 .card.focused {{ border: 3px solid {c_neg}; box-shadow: 0 4px 15px rgba(208,0,111,0.3); }}
                 .full {{ grid-column: 1 / -1; }}
                 .action-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
@@ -1980,17 +2440,27 @@ class CashFlowAnalyzer:
                 </div>
                 <div class="metric-card"><div class="m-label">Operating Efficiency</div><div class="m-val">{kpi_eff:.2f}x</div><div class="m-desc">Ratio of total inflows to outflows</div></div>
                 <div class="metric-card" style="border-top-color:{c_neg}"><div class="m-label">Weekly Burn</div><div class="m-val">${burn_rate/1e6:.2f}M</div><div class="m-desc">Average weekly cash outflow rate</div></div>
-                <div class="metric-card" style="border-top-color:{c_pos}"><div class="m-label">Duplicate Recovery</div><div class="m-val">${dupe_val/1e6:.1f}M</div><div class="m-desc">Potential savings from duplicate detection</div></div>
+                <div class="metric-card" style="border-top-color:{c_pos}"><div class="m-label">Duplicate Recovery</div><div class="m-val">${dupe_val_unified/1e6:.1f}M</div><div class="m-desc">Potential savings from duplicate detection</div></div>
             </div>
-            <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
-                <!-- Row 1: 1M Forecast, 6M Forecast, Backtest Accuracy -->
-                <div class="card" id="c2">{figures_html[2]}</div>
-                <div class="card" id="c3">{figures_html[3]}</div>
-                <div class="card" id="c5">{figures_html[5]}</div>
-                <!-- Row 2: Anomaly, Entity Map, Category Analysis -->
-                <div class="card" id="c0">{figures_html[0]}</div>
-                <div class="card" id="c1">{figures_html[1]}</div>
-                <div class="card" id="c4">{figures_html[4]}</div>
+            <div class="grid layout-grid">
+                <!-- Row 1: 5 Columns of Metrics (Handled by .top-metrics above) -->
+                
+                <!-- Row 2: MAP CENTERPIECE - Full Width with No Padding -->
+                <div class="card" id="c1" style="grid-column: span 12; height: 720px; padding: 0; overflow: hidden;">
+                    {figures_html[1]} <!-- Map is now Fig 1 -->
+                </div>
+
+                <!-- Row 3: Forecasts (1M & 6M) -->
+                <div class="card" id="c2" style="grid-column: span 6;">{figures_html[2]}</div>
+                <div class="card" id="c3" style="grid-column: span 6;">{figures_html[3]}</div>
+
+                <!-- Row 4: Anomaly Detection -->
+                <div class="card" id="c0" style="grid-column: span 12;">{figures_html[0]}</div>
+
+                <!-- Row 5: Category Analysis (Full) -->
+                <div class="card" id="c4" style="grid-column: span 12;">{figures_html[4]}</div>
+
+
 
 
 
@@ -2001,7 +2471,8 @@ class CashFlowAnalyzer:
                 </div>
                 <div class="brief full">
                     <div style="font-size:18px;font-weight:bold;margin-bottom:10px;">📊 Strategic Brief</div>
-                    <div>Efficiency: {kpi_eff:.2f}x | Runway: ~{abs(total_in-total_out)/burn_rate/4:.1f} months | Duplicate Risk: ${dupe_val/1e6:.1f}M</div>
+                    <div style="margin-bottom:5px; font-size:12px; opacity:0.8;">Methodology: Isolation Forest (Unsupervised Anomaly Detection) & Holiday Constraints</div>
+                    <div>Efficiency: {kpi_eff:.2f}x | Runway: ~{abs(total_in-total_out)/burn_rate/4:.1f} months | Duplicate Risk: ${dupe_val_unified/1e6:.1f}M</div>
                     {outlook_html}
                 </div>
 
