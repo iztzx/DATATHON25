@@ -2014,10 +2014,10 @@ class CashFlowAnalyzer:
                 dupe_text.append(f"<b>{name}</b><br>Duplicates: {smart_fmt(dupe_val)}")
 
         # Add Traces
-        if net_surplus_lats: f1.add_trace(go.Scattergeo(lat=net_surplus_lats, lon=net_surplus_lons, mode='markers', marker=dict(size=net_surplus_sizes, color=AZ['lime'], opacity=0.85, line=dict(color='white', width=1)), name='Net Surplus', text=net_surplus_text, hovertemplate='%{text}<extra></extra>'))
-        if net_deficit_lats: f1.add_trace(go.Scattergeo(lat=net_deficit_lats, lon=net_deficit_lons, mode='markers', marker=dict(size=net_deficit_sizes, color=c_neg, opacity=0.85, line=dict(color='white', width=1)), name='Net Deficit', text=net_deficit_text, hovertemplate='%{text}<extra></extra>'))
-        if anom_lats: f1.add_trace(go.Scattergeo(lat=anom_lats, lon=anom_lons, mode='markers', marker=dict(size=anom_sizes, color='rgba(0,0,0,0)', line=dict(color=AZ['mulberry'], width=3), opacity=1.0), name='Anomaly Detected', text=anom_text, hovertemplate='%{text}<extra></extra>'))
-        if dupe_lats: f1.add_trace(go.Scattergeo(lat=dupe_lats, lon=dupe_lons, mode='markers', marker=dict(size=14, color=AZ['blue'], symbol='diamond', line=dict(color='white', width=1)), name='Duplicate Risk', text=dupe_text, hovertemplate='%{text}<extra></extra>'))
+        if net_surplus_lats: f1.add_trace(go.Scattergeo(lat=net_surplus_lats, lon=net_surplus_lons, mode='markers', marker=dict(size=net_surplus_sizes, color=AZ['lime'], opacity=0.85, line=dict(color='white', width=1)), name='Net Surplus', text=net_surplus_text, customdata=['c2']*len(net_surplus_lats), hovertemplate='%{text}<extra></extra>'))
+        if net_deficit_lats: f1.add_trace(go.Scattergeo(lat=net_deficit_lats, lon=net_deficit_lons, mode='markers', marker=dict(size=net_deficit_sizes, color=c_neg, opacity=0.85, line=dict(color='white', width=1)), name='Net Deficit', text=net_deficit_text, customdata=['c2']*len(net_deficit_lats), hovertemplate='%{text}<extra></extra>'))
+        if anom_lats: f1.add_trace(go.Scattergeo(lat=anom_lats, lon=anom_lons, mode='markers', marker=dict(size=anom_sizes, color='rgba(0,0,0,0)', line=dict(color=AZ['mulberry'], width=3), opacity=1.0), name='Anomaly Detected', text=anom_text, customdata=['c0']*len(anom_lats), hovertemplate='%{text}<extra></extra>'))
+        if dupe_lats: f1.add_trace(go.Scattergeo(lat=dupe_lats, lon=dupe_lons, mode='markers', marker=dict(size=14, color=AZ['blue'], symbol='diamond', line=dict(color='white', width=1)), name='Duplicate Risk', text=dupe_text, customdata=['c0']*len(dupe_lats), hovertemplate='%{text}<extra></extra>'))
 
         style_fig(f1, "Regional Cash Flow Intelligence")
         f1.update_geos(
@@ -2289,7 +2289,7 @@ class CashFlowAnalyzer:
                 f"{dupe_cnt_final} transactions flagged (Same Amount+Date+Vendor heuristic)",
                 "Audit vendor invoices & payment logs for double-payments",
                 "High",
-                "c1"
+                "c0"
             ))
         
         # STATISTICAL ANOMALIES
@@ -2486,6 +2486,19 @@ class CashFlowAnalyzer:
                 function exportToPdf() {{
                     window.print();
                 }}
+                document.addEventListener("DOMContentLoaded", function() {{
+                    setTimeout(function() {{
+                        var mapDiv = document.querySelector('#c1 .plotly-graph-div');
+                        if (mapDiv) {{
+                            mapDiv.on('plotly_click', function(data){{
+                                if(data.points.length > 0){{
+                                    var targetId = data.points[0].customdata;
+                                    if(targetId){{ focusChart(targetId); }}
+                                }}
+                            }});
+                        }}
+                    }}, 2000); 
+                }});
             </script>
         </head><body id="dashboard-body">
             <div class="header-row">
